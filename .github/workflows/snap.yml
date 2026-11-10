@@ -1,0 +1,15 @@
+name: snap
+# Hourly delays of all GB trains from the Darwin snapshot (Rail Data Marketplace) -> railpulse.ch/api/live/tt/uk-rt
+# Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the GB map.
+on:
+  workflow_dispatch:
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q requests && python uk_snap.py
+        env:
+          RDM_KEY_SNAP: ${{ secrets.RDM_KEY_SNAP }}
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
