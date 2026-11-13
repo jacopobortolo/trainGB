@@ -31,10 +31,20 @@ def norm(s):
 
 
 def from_gtfs_de(ids, days):
-    r = requests.get('https://realtime.gtfs.de/realtime-free.pb', timeout=120, headers=UA)
-    r.raise_for_status()
+    content = None
+    for attempt in range(3):   # il download di 26 MB a volte si interrompe a meta: 3 tentativi
+        try:
+            r = requests.get('https://realtime.gtfs.de/realtime-free.pb', timeout=120, headers=UA)
+            r.raise_for_status()
+            content = r.content
+            break
+        except requests.RequestException as e:
+            print('gtfs.de: tentativo', attempt + 1, 'fallito:', e)
+            time.sleep(5)
+    if content is None:
+        return {}, 0, 0
     f = g.FeedMessage()
-    f.ParseFromString(r.content)
+    f.ParseFromString(content)
     d = {}
     for e in f.entity:
         if not e.HasField('trip_update'):
