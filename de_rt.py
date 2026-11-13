@@ -22,7 +22,7 @@ DB = 'https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1'
 
 
 def rows_of(day):
-    r = requests.get('%s/api/live/tt/de-%s?v=1' % (SITE, day), timeout=120, headers=UA)
+    r = requests.get('%s/api/live/tt/de-%s?v=2' % (SITE, day), timeout=120, headers=UA)
     return r.json().get('t', []) if r.status_code == 200 else []
 
 
