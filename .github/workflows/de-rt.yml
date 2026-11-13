@@ -1,5 +1,5 @@
 name: de-rt
-# Delays of German trains from the free GTFS-Realtime stream of gtfs.de (CC BY-SA 4.0) -> railpulse.ch/api/live/tt/de-rt
+# Delays of German trains: free GTFS-Realtime stream of gtfs.de (CC BY-SA 4.0) + DB Timetables API (DB API Marketplace) -> railpulse.ch/api/live/tt/de-rt
 # Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the German map.
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ concurrency:
 jobs:
   rt:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,3 +17,5 @@ jobs:
       - run: pip install -q requests gtfs-realtime-bindings && python de_rt.py
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
+          DB_CLIENT_ID: ${{ secrets.DB_CLIENT_ID }}
+          DB_API_KEY: ${{ secrets.DB_API_KEY }}
