@@ -8,7 +8,7 @@ guarda la mappa tedesca (D1 live «de:active»).
 Esito: PUT /api/live/tt/de-rt (SOCIAL_CRON_KEY) con {ts, d: {trip_id: [ritardo in minuti | null, null, null, 'R' | 'C']}}.
 Variabili: SOCIAL_CRON_KEY (per caricare), DB_CLIENT_ID e DB_API_KEY (senza, si usa solo gtfs.de), SITE (predefinito https://railpulse.ch).
 Serve: pip install requests gtfs-realtime-bindings"""
-import datetime as dt, gzip, json, os, re, sys, time
+import datetime as dt, gzip, json, os, random, re, sys, time
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 import requests
@@ -188,20 +188,33 @@ def main():
     ids = {r[0] for r in rows}
     d, feed_ts, n = from_gtfs_de(ids, days)
     known = sum(1 for v in d.values() if v[0] is not None)
+    key = os.environ.get('SOCIAL_CRON_KEY')
+
+    def upload(d, label):
+        body = gzip.compress(json.dumps({'ts': int(time.time() * 1000), 'feed': feed_ts, 'd': d}, separators=(',', ':')).encode(), 9)
+        print(label, n, 'entita gtfs.de;', known, 'con ritardo da gtfs.de;', sum(1 for v in d.values() if v[0] is not None), 'in tutto;', len(body) // 1000, 'kB', end='')
+        if key:
+            p = requests.put(SITE + '/api/live/tt/de-rt', data=body, headers={'Authorization': 'Bearer ' + key}, timeout=120)
+            print(' ->', p.status_code)
+        else:
+            print(' (non caricato: manca SOCIAL_CRON_KEY)')
+
+    # Dopo una pausa (nessuno guardava la mappa) i ritardi online sono vecchi: gtfs.de da solo ne ha gia ~90 %, quindi si caricano SUBITO, senza aspettare i ~4 minuti di DB Timetables
+    # (60 richieste al minuto). Se i ritardi online sono freschi si carica una volta sola, alla fine (le scritture di KV gratuito sono 1000 al giorno).
+    try:
+        old = requests.get('%s/api/live/tt/de-rt?v=%d' % (SITE, random.randint(100, 999)), timeout=60, headers=UA).json().get('ts', 0)
+    except Exception:
+        old = 0
+    early = time.time() * 1000 - old > 12 * 60000
+    if early:
+        upload(dict(d), 'subito:')
     try:
         for code, delay in from_db(rows).items():
             if code not in d or (d[code][0] is None and d[code][3] != 'C'):
                 d[code] = [delay, None, None, 'R']
     except Exception as e:   # un guasto di DB non blocca gtfs.de
         print('DB: errore', e)
-    body = gzip.compress(json.dumps({'ts': int(time.time() * 1000), 'feed': feed_ts, 'd': d}, separators=(',', ':')).encode(), 9)
-    print(n, 'entita gtfs.de;', known, 'con ritardo da gtfs.de;', sum(1 for v in d.values() if v[0] is not None), 'in tutto;', len(body) // 1000, 'kB', end='')
-    key = os.environ.get('SOCIAL_CRON_KEY')
-    if key:
-        p = requests.put(SITE + '/api/live/tt/de-rt', data=body, headers={'Authorization': 'Bearer ' + key}, timeout=120)
-        print(' ->', p.status_code)
-    else:
-        print(' (non caricato: manca SOCIAL_CRON_KEY)')
+    upload(d, 'completo:')
 
 
 main()
