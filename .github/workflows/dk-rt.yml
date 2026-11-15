@@ -1,0 +1,19 @@
+name: dk-rt
+# Delays of Danish trains: SIRI-ET feed derived by the Transitous project from the Rejseplanen event queues -> railpulse.ch/api/live/tt/dk-rt
+# Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the Danish map (or by day).
+on:
+  workflow_dispatch:
+concurrency:
+  group: dk-rt
+  cancel-in-progress: false
+jobs:
+  rt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests && python dk_rt.py
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
