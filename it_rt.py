@@ -27,10 +27,11 @@ def rows_of(day):
 
 def main():
     now = dt.datetime.now(TZ)
-    by_dest, by_orig = {}, {}
+    by_dest, nums = {}, set()
     for o in (0, -1):
         for r in rows_of((now + dt.timedelta(days=o)).strftime('%Y%m%d')):
             by_dest.setdefault((r[3] // 60, norm(r[1])), []).append(r[0])
+            nums.add(r[0])
     print('righe d orario:', len(by_dest))
     if os.environ.get('SIRI_FILE'):
         src = open(os.environ['SIRI_FILE'], 'rb')
@@ -44,6 +45,8 @@ def main():
         if el.tag != NS + 'EstimatedVehicleJourney':
             continue
         n += 1
+        rf = el.find(NS + 'FramedVehicleJourneyRef/' + NS + 'DatedVehicleJourneyRef')
+        el_ref = rf.text if rf is not None else ''
         calls = []
         for grp in ('RecordedCalls', 'EstimatedCalls'):
             g = el.find(NS + grp)
@@ -58,8 +61,11 @@ def main():
         if not t0:
             continue
         minute = int(dt.datetime.fromisoformat(t0).timestamp()) // 60
-        code = None
-        for k in (minute, minute - 1, minute + 1):
+        # 1) numero del treno: sta nel DatedVehicleJourneyRef («…_v_1-4399-5307-…» = treno 4399): abbina tutte le corse; 2) ripiego: minuto di partenza + destinazione
+        ref = el_ref
+        m = re.search(r'_v_\d+-(\d+)-', ref or '')
+        code = 'it:' + m.group(1) if m and 'it:' + m.group(1) in nums else None
+        for k in ((minute, minute - 1, minute + 1) if not code else ()):
             c = by_dest.get((k, norm(tx(l, 'StopPointName'))))
             if c:
                 code = c[0]
