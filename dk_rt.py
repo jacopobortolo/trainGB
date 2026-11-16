@@ -32,9 +32,13 @@ def main():
             m = re.search(r'(\d+)\s*$', r[2])
             if not m:
                 continue
-            exact[(m.group(1), r[3] // 60)] = r[0]
+            # l'orario di Rejseplanen scrive il numero su 6 cifre («002299», «070191»); il feed lo da senza zeri («2299») e, per alcuni treni DSB, senza le prime due cifre («191»)
+            full = m.group(1).lstrip('0') or '0'
+            exact[(full, r[3] // 60)] = r[0]
+            if len(m.group(1)) == 6:
+                exact.setdefault(((m.group(1)[2:].lstrip('0') or '0'), r[3] // 60), r[0])
             if abs(r[3] - now.timestamp()) < 8 * 3600:
-                by_num.setdefault(m.group(1), set()).add(r[0])
+                by_num.setdefault(full, set()).add(r[0])
     print('righe d orario:', len(exact))
     if os.environ.get('SIRI_FILE'):
         src = open(os.environ['SIRI_FILE'], 'rb')
@@ -52,6 +56,7 @@ def main():
         t0 = el.find(NS + 'OriginAimedDepartureTime')
         code = None
         if num is not None and num.text:
+            num.text = num.text.strip().lstrip('0') or '0'
             if t0 is not None and t0.text:
                 code = exact.get((num.text, int(dt.datetime.fromisoformat(t0.text).timestamp()) // 60))
             if not code and len(by_num.get(num.text, ())) == 1:
