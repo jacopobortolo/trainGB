@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ritardi e posizioni dei treni lettoni (Vivi) -> railpulse.ch/api/live/tt/lv-rt (D1), letto dalla pagina /lv con /api/lv/rt.
 
-Fonte: feed GTFS-Realtime dell'aggregatore baltico pieturas.lv (https://gsvalbe.id.lv/pieturas/dati/gtfs-rt.pb -> rt.pieturas.lv, CC0 secondo
+Fonte: feed GTFS-Realtime dell'aggregatore baltico pieturas.lv (https://gsvalbe.id.lv/pieturas/dati/gtfs-rt.pb -> rt.pieturas.lv, non CC0: uso permesso dall'autore il 16.11.2026; prima «CC0» secondo
 il registro Transitous; ~5 MB con tutti i mezzi di Lettonia, Lituania ed Estonia). Si tengono solo le corse «pv-<numero del treno>»: il numero
 e lo stesso del nostro orario (codice «lv:<numero>»). Per ogni treno GIA PARTITO: ritardo all'arrivo alla prossima fermata (minuti) e, se c'e,
 la posizione GPS. I treni non ancora partiti nel feed hanno solo l'orario: si saltano.
