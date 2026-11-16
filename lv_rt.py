@@ -6,7 +6,7 @@ il registro Transitous; ~5 MB con tutti i mezzi di Lettonia, Lituania ed Estonia
 e lo stesso del nostro orario (codice «lv:<numero>»). Per ogni treno GIA PARTITO: ritardo all'arrivo alla prossima fermata (minuti) e, se c'e,
 la posizione GPS. I treni non ancora partiti nel feed hanno solo l'orario: si saltano.
 
-E il server di un volontario: una richiesta per giro, solo quando qualcuno guarda la mappa lettone (lo avvia il cronometro: cron/index.js).
+E il server di un volontario: una richiesta per giro, solo quando qualcuno guarda la mappa lettone o la mappa d'Europa (lo avvia il cronometro: cron/index.js).
 Gira nel repository pubblico trainGB (workflow lv-rt.yml): se questo file cambia, copiarlo la.
 Uso: SOCIAL_CRON_KEY=... python lv_rt.py      (senza chiave stampa soltanto)
 """
