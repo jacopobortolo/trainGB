@@ -1,0 +1,19 @@
+name: lv-rt
+# Delays and positions of Latvian (Vivi) trains from the Baltic GTFS-Realtime feed of pieturas.lv -> railpulse.ch/api/live/tt/lv-rt
+# Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the Latvian map: one 5 MB download per run from a volunteer-run server.
+on:
+  workflow_dispatch:
+concurrency:
+  group: lv-rt
+  cancel-in-progress: false
+jobs:
+  rt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests && python lv_rt.py
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
