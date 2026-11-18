@@ -12,6 +12,8 @@ import requests
 
 SITE = os.environ.get('SITE', 'https://railpulse.ch')
 UA = {'User-Agent': 'RailPulse/1.0 (+https://railpulse.ch; railpulse.ch@gmail.com)', 'Accept-Encoding': 'gzip'}
+# BusOne chiede ai client automatici di dichiararsi (readme del feed): senza queste intestazioni in futuro le richieste non saranno servite
+BUSONE = dict(UA, **{'X-BusOne-Client': 'RailPulse/railpulse.ch; railpulse.ch@gmail.com', 'X-BusOne-Use': 'personal'})
 TZ = ZoneInfo('Europe/Rome')
 NS = '{http://www.siri.org.uk/siri}'
 
@@ -36,7 +38,7 @@ def main():
     if os.environ.get('SIRI_FILE'):
         src = open(os.environ['SIRI_FILE'], 'rb')
     else:
-        resp = requests.get('https://proxy.busone.app/trenitalia/siri-et.xml', timeout=120, headers=UA, stream=True)
+        resp = requests.get('https://proxy.busone.app/trenitalia/siri-et.xml', timeout=120, headers=BUSONE, stream=True)
         resp.raise_for_status()
         src = resp.raw
         src.decode_content = True
