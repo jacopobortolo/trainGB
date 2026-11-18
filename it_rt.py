@@ -46,7 +46,15 @@ def main():
             continue
         n += 1
         rf = el.find(NS + 'FramedVehicleJourneyRef/' + NS + 'DatedVehicleJourneyRef')
+        cx = el.find(NS + 'Cancellation')
+        gone = cx is not None and (cx.text or '').strip().lower() == 'true'   # corsa soppressa
         el_ref = rf.text if rf is not None else ''
+        if gone:   # una corsa soppressa arriva senza fermate: si riconosce dal numero del treno
+            mg = re.search(r'_v_\d+-(\d+)-', el_ref or '')
+            el.clear()
+            if mg and 'it:' + mg.group(1) in nums:
+                d['it:' + mg.group(1)] = [None, None, None, 'C']; hit += 1
+            continue
         calls = []
         for grp in ('RecordedCalls', 'EstimatedCalls'):
             g = el.find(NS + grp)
@@ -90,7 +98,7 @@ def main():
         if delay is not None and not -60 <= delay <= 360:
             delay = None
         d[code] = [delay, None, None, 'R']
-    print('corse nel feed:', n, 'abbinate:', hit, 'con ritardo:', sum(1 for v in d.values() if v[0] is not None))
+    print('corse nel feed (istantanea: in viaggio, appena arrivate e in partenza):', n, 'abbinate:', hit, 'con ritardo:', sum(1 for v in d.values() if v[0] is not None), 'soppresse:', sum(1 for v in d.values() if v[3] == 'C'))
     body = gzip.compress(json.dumps({'ts': int(dt.datetime.now().timestamp() * 1000), 'd': d}, separators=(',', ':')).encode('utf-8'), 9)
     key = os.environ.get('SOCIAL_CRON_KEY')
     if os.environ.get('TT_OUT'):
