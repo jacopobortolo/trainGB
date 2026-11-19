@@ -1,15 +1,16 @@
 """Germania: ritardi dei treni da due fonti, uniti in un solo file caricato su railpulse.ch.
 1. GTFS-Realtime gratuito di gtfs.de (https://realtime.gtfs.de/realtime-free.pb, CC BY-SA 4.0, senza chiave, protobuf ~26 MB con tutti i mezzi): copre circa un treno su cinque.
-2. API Timetables di DB (DB API Marketplace, chiavi DB_CLIENT_ID e DB_API_KEY, 60 richieste al minuto): le variazioni (`fchg`) delle ~100 stazioni piu trafficate
-   (tools/de_db_stations.json, generato da tools/de_db_stations.py con StaDa). Un ritardo letto a una stazione vale per tutta la corsa; l'abbinamento alla corsa dell'orario
-   si fa per stazione (le nostre stazioni entro 500 m), minuto di partenza (o di arrivo se e l'ultima fermata) e destinazione, perche l'orario di gtfs.de non ha il numero del treno.
+2. API OpenBoards di DB (DB API Marketplace, chiavi DB_CLIENT_ID e DB_API_KEY, piano Free: 10 richieste al secondo; dal 19.11.2026 al posto dell'API Timetables, che DB spegne
+   a meta 2027): partenze (e per le piu grandi anche arrivi) delle stazioni piu trafficate (tools/de_db_stations.json, generato da tools/de_db_stations.py con StaDa), una richiesta
+   per stazione, ora programmata e prevista. Un ritardo letto a una stazione vale per tutta la corsa; l'abbinamento alla corsa dell'orario si fa per stazione (le nostre stazioni
+   entro 500 m), minuto di partenza (o di arrivo), ora di partenza dal capolinea e destinazione, perche l'orario di gtfs.de non ha il numero del treno.
 Troppo per un Worker gratuito: lo esegue questo job (repository pubblico trainGB, minuti gratuiti), avviato dal cronometro di RailPulse ogni ~5 minuti solo mentre qualcuno
 guarda la mappa tedesca (D1 live «de:active»).
 Esito: PUT /api/live/tt/de-rt (SOCIAL_CRON_KEY) con {ts, d: {trip_id: [ritardo in minuti | null, null, null, 'R' | 'C']}}.
 Variabili: SOCIAL_CRON_KEY (per caricare), DB_CLIENT_ID e DB_API_KEY (senza, si usa solo gtfs.de), SITE (predefinito https://railpulse.ch).
 Serve: pip install requests gtfs-realtime-bindings"""
-import datetime as dt, gzip, json, os, random, re, sys, time
-import xml.etree.ElementTree as ET
+import datetime as dt, gzip, json, os, random, re, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from zoneinfo import ZoneInfo
 import requests
 from google.transit import gtfs_realtime_pb2 as g
@@ -18,7 +19,11 @@ SITE = os.environ.get('SITE', 'https://railpulse.ch')
 UA = {'User-Agent': 'RailPulse/1.0 (+https://railpulse.ch; railpulse.ch@gmail.com)', 'Accept-Encoding': 'gzip'}
 TZ = ZoneInfo('Europe/Berlin')
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB = 'https://apis.deutschebahn.com/db-api-marketplace/apis/timetables/v1'
+OB = 'https://apis.deutschebahn.com/db-api-marketplace/apis/open-boards/v1'
+N_DEP = int(os.environ.get('DB_STATIONS', 1500))    # stazioni di cui leggere le partenze (le piu trafficate dell'elenco)
+N_ARR = int(os.environ.get('DB_ARRIVALS', 500))     # di queste, quelle di cui leggere anche gli arrivi (treni sull'ultimo tratto)
+WIN = int(os.environ.get('DB_WINDOW', 60))          # finestra in minuti da adesso (piu 10 minuti indietro)
+RATE = float(os.environ.get('DB_RATE', 8))          # richieste al secondo (il piano Free ne ammette 10)
 
 
 def rows_of(day):
@@ -45,7 +50,7 @@ def from_gtfs_de(ids, days):
         return {}, 0, 0
     f = g.FeedMessage()
     f.ParseFromString(content)
-    d = {}
+    d, now = {}, time.time()
     for e in f.entity:
         if not e.HasField('trip_update'):
             continue
@@ -56,124 +61,140 @@ def from_gtfs_de(ids, days):
         if t.trip.schedule_relationship == 3:   # CANCELED
             d[tid] = [None, None, None, 'C']
             continue
-        delay = None
+        delay = None   # ritardo alla PROSSIMA fermata (prima voce con l'ora prevista non ancora passata), altrimenti l'ultimo noto: la prima voce e spesso il capolinea di partenza
         for s in t.stop_time_update:
             ev = s.departure if s.HasField('departure') and s.departure.HasField('delay') else s.arrival if s.HasField('arrival') and s.arrival.HasField('delay') else None
             if ev is not None:
                 delay = ev.delay
-                break
+                if not ev.time or ev.time >= now - 60:
+                    break
         if delay is None and t.HasField('delay'):
             delay = t.delay
         d[tid] = [round(delay / 60), None, None, 'R'] if delay is not None and -3600 <= delay <= 3 * 3600 else [None, None, None, 'R']
     return d, f.header.timestamp * 1000, len(f.entity)
 
 
-def epoch(s):   # «2611132109» (aammggHHMM, ora di Berlino) -> secondi UTC
-    return int(dt.datetime(2000 + int(s[0:2]), int(s[2:4]), int(s[4:6]), int(s[6:8]), int(s[8:10]), tzinfo=TZ).timestamp())
-
-
 def from_db(rows):
-    """{trip_id: ritardo in minuti} dalle variazioni delle stazioni principali (API Timetables di DB)."""
+    """{trip_id: ritardo in minuti} dalle partenze e dagli arrivi delle stazioni (API OpenBoards di DB)."""
     cid, key = os.environ.get('DB_CLIENT_ID'), os.environ.get('DB_API_KEY')
     path = next((p for p in (os.path.join(HERE, 'de_db_stations.json'), os.path.join(HERE, 'tools', 'de_db_stations.json')) if os.path.exists(p)), None)
     if not (cid and key and path):
         print('DB: saltato (mancano chiavi o elenco stazioni)')
         return {}
-    stations = json.load(open(path, encoding='utf-8'))
+    stations = json.load(open(path, encoding='utf-8'))[:N_DEP]
     where = {}   # id stazione nostra -> indice della stazione DB
     for i, s in enumerate(stations):
         for oid in s['near']:
             where.setdefault(oid, i)
-    idx = {}     # (indice stazione, minuto, 'd'|'a') -> [(codice, destinazione normalizzata)]
+    idx = {}     # (indice stazione, minuto, 'd'|'a') -> [(codice, destinazione normalizzata, minuto di partenza dal capolinea)]
     for row in rows:
         base, to = row[3], norm(row[1])
+        start = (base + row[6]) // 60 if len(row) > 6 else None
         for k in range(4, len(row), 3):
             i = where.get(row[k])
             if i is None:
                 continue
             last = k + 3 >= len(row)
             if not last:
-                idx.setdefault((i, (base + row[k + 2]) // 60, 'd'), []).append((row[0], to))
+                idx.setdefault((i, (base + row[k + 2]) // 60, 'd'), []).append((row[0], to, start))
             if k > 4:
-                idx.setdefault((i, (base + row[k + 1]) // 60, 'a'), []).append((row[0], to))
-    h = {'DB-Client-Id': cid, 'DB-Api-Key': key, 'Accept': 'application/xml'}
+                idx.setdefault((i, (base + row[k + 1]) // 60, 'a'), []).append((row[0], to, start))
+    h = {'DB-Client-Id': cid, 'DB-Api-Key': key, 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': UA['User-Agent']}
     now = time.time()
-    ph = dt.datetime.fromtimestamp(now + 20 * 60, TZ)   # ora del piano da leggere: copre da ~10 minuti fa a ~50 minuti avanti
-    plan_path = '%s/%s' % (ph.strftime('%y%m%d'), ph.strftime('%H'))
-    obs = {}     # codice -> [(ora prevista, ritardo)]
-    calls = ok = hit = 0
+    iso = lambda t: dt.datetime.fromtimestamp(t, TZ).replace(microsecond=0).isoformat()
+    ts = lambda v: dt.datetime.fromisoformat(v).timestamp()
+    win = {'timeStart': iso(now - 10 * 60), 'timeEnd': iso(now + WIN * 60)}
+    lock, state = threading.Lock(), {'next': 0.0, 'calls': 0, 'ok': 0, 'full': 0}
+    sess = requests.Session()
 
-    def get(url):
-        nonlocal calls, ok
-        calls += 1
-        try:
-            r = requests.get(url, headers=h, timeout=30)
-        except requests.RequestException:
-            return None
-        if r.status_code == 429:
-            time.sleep(20)
-            return None
-        if r.status_code != 200:
-            return None
-        try:
-            root = ET.fromstring(r.content)
-        except ET.ParseError:
-            return None
-        ok += 1
-        return root
+    def get(ep, eva, win):
+        for attempt in range(2):
+            with lock:   # passo fisso tra le richieste: il piano Free ammette 10 al secondo
+                wait = state['next'] - time.time()
+                state['next'] = max(time.time(), state['next']) + 1.0 / RATE
+                state['calls'] += 1
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                r = sess.post('%s/%s' % (OB, ep), headers=h, timeout=30, json={'stopPlaceOrStation': {'evaNumbers': [str(eva)]}, 'timeWindow': win, 'maxViaStops': 0, 'maxEntriesPerTransportType': 50, 'languages': ['deu']})
+            except requests.RequestException:
+                continue
+            if r.status_code == 429:
+                time.sleep(2)
+                continue
+            if r.status_code != 200:
+                return None
+            try:
+                j = r.json()
+            except ValueError:
+                return None
+            with lock:
+                state['ok'] += 1
+            return j
+        return None
 
-    def match(i, kind, pt, ppth):
-        cand = idx.get((i, pt // 60, kind), [])
-        if len(cand) > 1:
-            dest = norm((ppth or '').split('|')[-1]) if kind == 'd' else ''
-            narrowed = [c for c in cand if dest and (c[1].startswith(dest[:6]) or dest.startswith(c[1][:6]))]
-            cand = narrowed or cand
+    def read(job):
+        i, ep = job
+        kind, res, w = 'd' if ep == 'departures' else 'a', [], win
+        for page in range(3):   # al massimo 50 voci per tipo di treno: una tabella piena si continua dall'ultima ora ricevuta
+            j = get(ep, stations[i]['eva'][0], w)
+            if not j:
+                break
+            more = part(j, i, ep, kind, res)
+            if not more:
+                break
+            with lock:
+                state['full'] += 1
+            w = {'timeStart': more, 'timeEnd': win['timeEnd']}
+        return list(set(res))
+
+    def part(j, i, ep, kind, res):
+        names = {p.get('evaNumber'): (p.get('localizedNames') or [{}])[0].get('name', '') for p in j.get('stopPlaces', [])}
+        per, lastt = {}, {}
+        for e in j.get(ep, []):
+            try:
+                tp = (e.get('transport') or {}).get('type')
+                per[tp] = per.get(tp, 0) + 1
+                if e.get('time'):
+                    lastt[tp] = max(lastt.get(tp, ''), e['time'])
+                if e.get('cancelled') or e.get('timeType') not in ('PREVIEW', 'REAL') or not e.get('timeSchedule') or not e.get('time'):
+                    continue   # senza previsione (solo orario) o fermata soppressa: nessun dato
+                pt = ts(e['timeSchedule'])
+                dl = round((ts(e['time']) - pt) / 60)
+                if not -60 <= dl <= 180:
+                    continue
+                info = e.get('journeyInfo') or {}
+                st = info.get('scheduledStartTime')
+                res.append((i, kind, pt, dl, int(ts(st)) // 60 if st else None, norm(names.get((info.get('destination') or {}).get('evaNumber'), ''))))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        full = [lastt[tp] for tp, n in per.items() if n >= 50 and tp in lastt]
+        return min(full) if full else None
+
+    def match(i, kind, pt, start, dest):
+        cand = idx.get((i, int(pt) // 60, kind), [])
+        if len(cand) > 1 and start is not None:   # stesso minuto alla stessa stazione: prima la partenza dal capolinea, poi il nome della destinazione
+            cand = [c for c in cand if c[2] == start] or cand
+        if len(cand) > 1 and dest:
+            cand = [c for c in cand if c[1].startswith(dest[:6]) or dest.startswith(c[1][:6])] or cand
         return cand[0][0] if len(cand) == 1 else None
 
-    for i, s in enumerate(stations):
-        for eva in s['eva']:
-            chg = get('%s/fchg/%s' % (DB, eva))
-            time.sleep(1.05)   # limite di 60 richieste al minuto
-            plan = get('%s/plan/%s/%s' % (DB, eva, plan_path))
-            time.sleep(1.05)
-            changes = {}   # id della corsa-fermata -> {'d'|'a': ritardo | None (soppresso)}
-            if chg is not None:
-                for el in chg.findall('s'):
-                    for tag, kind in (('dp', 'd'), ('ar', 'a')):
-                        ev = el.find(tag)
-                        if ev is None or not ev.get('pt'):
-                            continue
-                        pt = epoch(ev.get('pt'))
-                        if ev.get('cs') == 'c':
-                            changes.setdefault(el.get('id'), {})[kind] = None
-                            continue
-                        if ev.get('ct'):
-                            dl = round((epoch(ev.get('ct')) - pt) / 60)
-                            if -60 <= dl <= 180:
-                                changes.setdefault(el.get('id'), {})[kind] = dl
-                                code = match(i, kind, pt, ev.get('ppth'))
-                                if code:
-                                    obs.setdefault(code, []).append((pt, dl))
-                                    hit += 1
-            if plan is not None:   # treni previsti nella finestra senza variazione: in orario
-                for el in plan.findall('s'):
-                    for tag, kind in (('dp', 'd'), ('ar', 'a')):
-                        ev = el.find(tag)
-                        if ev is None or not ev.get('pt'):
-                            continue
-                        pt = epoch(ev.get('pt'))
-                        if not now - 600 <= pt <= now + 3000 or kind in changes.get(el.get('id'), {}):
-                            continue
-                        code = match(i, kind, pt, ev.get('ppth'))
-                        if code:
-                            obs.setdefault(code, []).append((pt, 0))
-                            hit += 1
+    jobs = [(i, 'departures') for i in range(len(stations))] + [(i, 'arrivals') for i in range(min(N_ARR, len(stations)))]
+    obs, seen, hit = {}, 0, 0   # codice -> [(ora prevista, ritardo)]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for res in ex.map(read, jobs):
+            for i, kind, pt, dl, start, dest in res:
+                seen += 1
+                code = match(i, kind, pt, start, dest)
+                if code:
+                    obs.setdefault(code, []).append((pt, dl))
+                    hit += 1
     out = {}
     for code, lst in obs.items():
-        up = [x for x in lst if x[0] >= now - 600]
-        pt, delay = min(up, key=lambda x: x[0]) if up else max(lst, key=lambda x: x[0])   # la prossima fermata, altrimenti l'ultima
+        up = [x for x in lst if x[0] + x[1] * 60 >= now - 120]   # la prossima fermata (ora prevista col ritardo), altrimenti l'ultima
+        pt, delay = min(up, key=lambda x: x[0]) if up else max(lst, key=lambda x: x[0])
         out[code] = delay
-    print('DB:', calls, 'richieste,', ok, 'riuscite,', hit, 'ritardi abbinati,', len(out), 'treni')
+    print('DB OpenBoards:', len(stations), 'stazioni,', state['calls'], 'richieste,', state['ok'], 'riuscite,', state['full'], 'tabelle piene,', seen, 'voci con previsione,', hit, 'abbinate,', len(out), 'treni,', round(time.time() - now), 's')
     return out
 
 
@@ -199,8 +220,8 @@ def main():
         else:
             print(' (non caricato: manca SOCIAL_CRON_KEY)')
 
-    # Dopo una pausa (nessuno guardava la mappa) i ritardi online sono vecchi: gtfs.de da solo ne ha gia ~90 %, quindi si caricano SUBITO, senza aspettare i ~4 minuti di DB Timetables
-    # (60 richieste al minuto). Se i ritardi online sono freschi si carica una volta sola, alla fine (le scritture di KV gratuito sono 1000 al giorno).
+    # Dopo una pausa (nessuno guardava la mappa) i ritardi online sono vecchi: gtfs.de da solo ne ha gia ~90 %, quindi si caricano SUBITO, senza aspettare la lettura di DB OpenBoards
+    # (alcuni minuti). Se i ritardi online sono freschi si carica una volta sola, alla fine (le scritture di KV gratuito sono 1000 al giorno).
     try:
         old = requests.get('%s/api/live/tt/de-rt?v=%d' % (SITE, random.randint(100, 999)), timeout=60, headers=UA).json().get('ts', 0)
     except Exception:

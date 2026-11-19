@@ -1,5 +1,5 @@
 name: de-rt
-# Delays of German trains: free GTFS-Realtime stream of gtfs.de (CC BY-SA 4.0) + DB Timetables API (DB API Marketplace) -> railpulse.ch/api/live/tt/de-rt
+# Delays of German trains: free GTFS-Realtime stream of gtfs.de (CC BY-SA 4.0) + DB OpenBoards API (DB API Marketplace) -> railpulse.ch/api/live/tt/de-rt
 # Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the German map.
 on:
   workflow_dispatch:
