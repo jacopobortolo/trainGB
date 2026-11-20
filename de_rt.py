@@ -1,5 +1,5 @@
 """Germania: ritardi dei treni da due fonti, uniti in un solo file caricato su railpulse.ch.
-1. GTFS-Realtime gratuito di gtfs.de (https://realtime.gtfs.de/realtime-free.pb, CC BY-SA 4.0, senza chiave, protobuf ~26 MB con tutti i mezzi): copre circa un treno su cinque.
+1. GTFS-Realtime gratuito di gtfs.de (https://realtime.gtfs.de/realtime-free.pb, CC BY-SA 4.0, senza chiave, protobuf ~26 MB con tutti i mezzi): da solo copre circa l'86 % dei treni in viaggio (misura del 19.11.2026).
 2. API OpenBoards di DB (DB API Marketplace, chiavi DB_CLIENT_ID e DB_API_KEY, piano Free: 10 richieste al secondo; dal 19.11.2026 al posto dell'API Timetables, che DB spegne
    a meta 2027): partenze (e per le piu grandi anche arrivi) delle stazioni piu trafficate (tools/de_db_stations.json, generato da tools/de_db_stations.py con StaDa), una richiesta
    per stazione, ora programmata e prevista. Un ritardo letto a una stazione vale per tutta la corsa; l'abbinamento alla corsa dell'orario si fa per stazione (le nostre stazioni
@@ -74,14 +74,15 @@ def from_gtfs_de(ids, days):
     return d, f.header.timestamp * 1000, len(f.entity)
 
 
-def from_db(rows):
+def from_db(rows, stations=None, sess=None, now=None):   # gli ultimi tre parametri servono solo alle prove (tests/de_rt_test.py)
     """{trip_id: ritardo in minuti} dalle partenze e dagli arrivi delle stazioni (API OpenBoards di DB)."""
     cid, key = os.environ.get('DB_CLIENT_ID'), os.environ.get('DB_API_KEY')
     path = next((p for p in (os.path.join(HERE, 'de_db_stations.json'), os.path.join(HERE, 'tools', 'de_db_stations.json')) if os.path.exists(p)), None)
-    if not (cid and key and path):
-        print('DB: saltato (mancano chiavi o elenco stazioni)')
-        return {}
-    stations = json.load(open(path, encoding='utf-8'))[:N_DEP]
+    if stations is None:
+        if not (cid and key and path):
+            print('DB: saltato (mancano chiavi o elenco stazioni)')
+            return {}
+        stations = json.load(open(path, encoding='utf-8'))[:N_DEP]
     where = {}   # id stazione nostra -> indice della stazione DB
     for i, s in enumerate(stations):
         for oid in s['near']:
@@ -100,12 +101,12 @@ def from_db(rows):
             if k > 4:
                 idx.setdefault((i, (base + row[k + 1]) // 60, 'a'), []).append((row[0], to, start))
     h = {'DB-Client-Id': cid, 'DB-Api-Key': key, 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': UA['User-Agent']}
-    now = time.time()
+    now = now or time.time()
     iso = lambda t: dt.datetime.fromtimestamp(t, TZ).replace(microsecond=0).isoformat()
     ts = lambda v: dt.datetime.fromisoformat(v).timestamp()
     win = {'timeStart': iso(now - 10 * 60), 'timeEnd': iso(now + WIN * 60)}
     lock, state = threading.Lock(), {'next': 0.0, 'calls': 0, 'ok': 0, 'full': 0}
-    sess = requests.Session()
+    sess = sess or requests.Session()
 
     def get(ep, eva, win):
         for attempt in range(2):
@@ -238,4 +239,5 @@ def main():
     upload(d, 'completo:')
 
 
-main()
+if __name__ == '__main__':
+    main()
