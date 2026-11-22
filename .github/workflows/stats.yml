@@ -1,0 +1,20 @@
+name: stats
+# Hourly sample of the trains running in Europe for the history of railpulse.ch/stats: opens the page in a headless browser and stores the summary
+# the page itself prepares (PUT railpulse.ch/api/live/sample). Started once an hour by the RailPulse scheduler (workflow_dispatch). One page load per run.
+on:
+  workflow_dispatch:
+concurrency:
+  group: stats
+  cancel-in-progress: false
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm i --no-save playwright@1.49.1 && npx playwright install --with-deps chromium
+      - run: node stats_sample.js
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
