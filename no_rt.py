@@ -7,7 +7,7 @@ della prima fermata successiva; 'C' se soppressa; le corse già arrivate al capo
 {ts, d: {chiave: [ritardo in minuti | null, null, null, 'R' | 'C', marciapiede dell'ultima fermata con orario effettivo]}}.
 Gira nel repository PUBBLICO jacopobortolo/trainGB (workflow no-rt.yml, avviato dal cronometro): questa è la copia di riferimento.
 Variabili: SOCIAL_CRON_KEY, SITE. Serve: pip install requests"""
-import json, os, re, sys, time
+import gzip, json, os, re, sys, time
 from datetime import datetime
 import requests
 
@@ -79,7 +79,7 @@ def main():
     if not key:
         print('senza SOCIAL_CRON_KEY: non carico', len(d), 'treni')
         return
-    r = requests.put(SITE + '/api/live/tt/no-rt', data=body, headers={'Authorization': 'Bearer ' + key}, timeout=120)
+    r = requests.put(SITE + '/api/live/tt/no-rt', data=gzip.compress(body.encode()), headers={'Authorization': 'Bearer ' + key}, timeout=120)   # il sito vuole il corpo compresso
     print('PUT no-rt', r.status_code, len(body) // 1000, 'kB,', len(d), 'treni')
     if r.status_code != 200:
         sys.exit(1)
