@@ -3,6 +3,9 @@ XML da ~800 kB con 70 treni di notte e oltre 15 MB di giorno: troppo per un Work
 avviato dal cronometro di RailPulse ogni ~6 minuti solo mentre qualcuno guarda la mappa italiana o di giorno (D1 live «it:active»).
 Il feed non ha il numero del treno: l'abbinamento con il nostro orario (tt:it-<giorno>, codice «it:<numero>») si fa per MINUTO DI PARTENZA del primo
 capolinea e NOME DELLA DESTINAZIONE (poi, in ripiego, nome dell'origine). Ritardo = ultima fermata gia effettuata (Actual - Aimed), altrimenti prima fermata prevista (Expected - Aimed).
+Italo (dal 23.11.2026): GTFS-Realtime di BusOne https://proxy.busone.app/italo/gtfs-rt/trip-updates.json (feed «con badge»: gratis anche per uso commerciale,
+attribuzione obbligatoria «BusOne (https://busone.app) e fonte originale»; ritardi «operator-reported», origine non dichiarata), abbinato per numero del treno
+(«Italo 8111» → «itx:8111», lo stesso codice di tools/it_netex.py); ritardo della prossima fermata.
 Esito: PUT /api/live/tt/it-rt (SOCIAL_CRON_KEY) con {ts, d: {«it:<numero>»: [ritardo in minuti | null, null, null, 'R']}}.
 Variabili: SOCIAL_CRON_KEY, SITE (predefinito https://railpulse.ch), SIRI_FILE (prova in locale: file XML invece del download). Serve: pip install requests"""
 import datetime as dt, gzip, json, os, re, sys, unicodedata
@@ -100,6 +103,11 @@ def main():
         if delay is not None and not -60 <= delay <= 360:
             delay = None
         d[code] = [delay, None, None, 'R']
+    try:
+        n_it, h_it = italo(d, nums)
+        print('Italo: corse nel feed', n_it, 'abbinate', h_it)
+    except Exception as e:   # Italo non risponde: restano i ritardi di Trenitalia
+        print('Italo: errore', e)
     print('corse nel feed (istantanea: in viaggio, appena arrivate e in partenza):', n, 'abbinate:', hit, 'con ritardo:', sum(1 for v in d.values() if v[0] is not None), 'soppresse:', sum(1 for v in d.values() if v[3] == 'C'))
     body = gzip.compress(json.dumps({'ts': int(dt.datetime.now().timestamp() * 1000), 'd': d}, separators=(',', ':')).encode('utf-8'), 9)
     key = os.environ.get('SOCIAL_CRON_KEY')
@@ -110,6 +118,36 @@ def main():
         print('PUT it-rt', r.status_code, len(body) // 1000, 'kB')
     elif not key:
         print('(non caricato: manca SOCIAL_CRON_KEY)')
+
+
+def italo(d, nums):
+    """Ritardi di Italo dal GTFS-Realtime di BusOne → d[«itx:<numero>»]. Ritorna (corse nel feed, abbinate)."""
+    r = requests.get('https://proxy.busone.app/italo/gtfs-rt/trip-updates.json', timeout=60, headers=BUSONE)
+    r.raise_for_status()
+    now, n, hit = dt.datetime.now().timestamp(), 0, 0
+    for e in r.json().get('entity', []):
+        tu = e.get('trip_update') or {}
+        n += 1
+        v = tu.get('vehicle') or {}
+        m = re.search(r'(\d{3,5})\s*$', v.get('label') or '') or re.search(r'(\d{3,5})$', v.get('id') or '') or re.search(r'NTV-(\d{3,5})-', (tu.get('trip') or {}).get('trip_id') or '')
+        code = 'itx:' + m.group(1) if m else None
+        if not code or code not in nums:
+            continue
+        hit += 1
+        if (tu.get('trip') or {}).get('schedule_relationship') in ('CANCELED', 'CANCELLED', 3):
+            d[code] = [None, None, None, 'C']
+            continue
+        delay = None
+        for s in tu.get('stop_time_update') or []:   # prossima fermata: la prima con l'ora prevista non ancora passata; altrimenti l'ultima
+            ev = s.get('departure') or s.get('arrival') or {}
+            if ev.get('delay') is None:
+                continue
+            delay = round(ev['delay'] / 60)
+            if (ev.get('time') or 0) >= now:
+                break
+        if delay is not None and -60 <= delay <= 360:
+            d[code] = [delay, None, None, 'R']
+    return n, hit
 
 
 if __name__ == '__main__':
