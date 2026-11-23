@@ -1,0 +1,19 @@
+name: no-rt
+# Delays of Norwegian trains (Entur SIRI-ET, NLOD, read through the railpulse.ch proxy) -> railpulse.ch/api/live/tt/no-rt, for the RailPulse delay log.
+# Started by the RailPulse scheduler (workflow_dispatch) about every 10 minutes.
+on:
+  workflow_dispatch:
+concurrency:
+  group: no-rt
+  cancel-in-progress: false
+jobs:
+  rt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests && python no_rt.py
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
