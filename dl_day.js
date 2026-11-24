@@ -14,6 +14,9 @@ const SITE = process.env.SITE || 'https://railpulse.ch', KEY = process.env.SOCIA
 const CC = ['ch', 'de', 'fr', 'it', 'es', 'nl', 'be', 'lu', 'pl', 'cz', 'sk', 'hu', 'si', 'ro', 'bg', 'pt', 'dk', 'se', 'fi', 'no', 'uk', 'ie', 'lv', 'gr', 'ee'];
 const GPS = { gr: 1, ee: 1 };
 const KEEP_DAYS = 120;
+// chiave del treno per la pagina /train (partenza | HHMM locale | arrivo): js/trn.js nel sito, trn.js accanto a questo file in trainGB
+let TRN = null; try { TRN = require('../js/trn.js'); } catch (e) { try { TRN = require('./trn.js'); } catch (e2) { /* senza: i ritardi più grandi restano senza link */ } }
+const keyOf = (cc, r) => { if (!TRN) return ''; const ids = []; for (let i = 4; i + 2 < r.length; i += 3) ids.push(r[i]); return ids.length < 2 ? '' : TRN.key(ids[0], TRN.hm(cc, (r[3] + r[6]) * 1000), ids[ids.length - 1]); };
 const TZ = { fi: 'Europe/Helsinki', se: 'Europe/Stockholm' };
 
 // registro: «@AAAAMMGGHH» poi righe «secondi<TAB>codice<TAB>valore» → Map codice → [[ms, valore | null (= sparito)], …] in ordine di tempo
@@ -98,11 +101,11 @@ function finalOf(cc, r, reg, pos) {
   }
   return { d, c: canc && d == null, seen };
 }
-function add(s, top, d, item) {
+function add(s, top, d, item, key) {   // top = [paese, treno, destinazione, minuti, chiave per /train]
   s[1]++; s[d < 2 ? 3 : d <= 5 ? 4 : 5]++;
   if (d <= 1) s[6]++; if (d <= 3) s[7]++; if (d <= 5) s[8]++; if (d <= 15) s[9]++;
   s[10] += Math.max(0, d);
-  if (d >= 30) top.push([...item, d]);
+  if (d >= 30) top.push(key ? [...item, d, key] : [...item, d]);
 }
 function summarize(cc, rows, reg, pos) {
   const s = [rows.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = [];
@@ -111,7 +114,7 @@ function summarize(cc, rows, reg, pos) {
     const f = finalOf(cc, r, reg, pos);
     if (f.c) { s[2]++; continue; }
     if (f.d == null) continue;
-    add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')]);
+    add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')], keyOf(cc, r));
   }
   return { s, top };
 }
@@ -132,7 +135,10 @@ function summarizeCh(tt, text, day) {
     if (x[2]) { s[2]++; continue; }
     const st = x[3] || []; if (!st.length) continue;
     const d = Math.round(st[st.length - 1][1] / 60); if (d < -60 || d > 600) continue;
-    add(s, top, d, ['ch', String(t[0] || t[1] || ''), String(t[2] || '')]);
+    const f = t[4] || [], S = tt.stops || [], sid = (q) => String(S[q] ? S[q][0] : q);
+    let key = '';
+    if (TRN && f.length >= 8) { const utc = Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6, 8)), mid = utc - +new Date(utc).toLocaleString('en-GB', { timeZone: 'Europe/Zurich', hour: '2-digit', hour12: false }) * 3600000; key = TRN.key(sid(f[0]), TRN.hm('ch', mid + f[2] * 1000), sid(f[f.length - 4])); }
+    add(s, top, d, ['ch', String(t[0] || t[1] || ''), String(t[2] || '')], key);
   }
   return { s, top };
 }
