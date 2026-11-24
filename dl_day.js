@@ -5,11 +5,14 @@
 //   --dir = file già scaricati (reg-<cc>.txt nel formato di /api/social/dl/<cc>/day/<giorno>, tt-<cc>.json): per provare senza rete.
 // Risultato in D1 «tt:dlday» (PUT /api/live/tt/dlday, letto da js/stats.js con GET /api/live/tt/dlday):
 //   { v: 1, upd, days: { AAAAMMGG: { cc: [corse, con ritardo, soppresse, <2, 2–5, >5, ≤1, ≤3, ≤5, ≤15, minuti di ritardo sommati] } }, top: { AAAAMMGG: [[cc, treno, destinazione, minuti]] } }
-// Paesi esclusi: Grecia ed Estonia (solo posizione GPS), Norvegia (codici diversi tra registro e orario), Svizzera (registro proprio degli arrivi, rta:).
+// Svizzera: dal registro degli arrivi del cronometro (rta:, ogni 2 minuti: ultimo stato di ogni corsa quando esce dal feed), battelli esclusi.
+// Grecia ed Estonia: solo la posizione GPS → ritardo stimato dalla posizione sulla linea retta tra le fermate (come js/<paese>-data.js, gpsDelay).
+// Norvegia: Vy e Go-Ahead per numero del treno e giorno (registro «DatedServiceJourney:<numero>_…_AA-MM-GG», orario «ServiceJourney:<numero>_…»), Flytoget per codice.
 // Una copia identica sta nel repository pubblico trainGB (workflow dl-day.yml): se cambia, ricopiarla.
 const fs = require('fs'), path = require('path');
 const SITE = process.env.SITE || 'https://railpulse.ch', KEY = process.env.SOCIAL_CRON_KEY || '';
-const CC = ['de', 'fr', 'it', 'es', 'nl', 'be', 'lu', 'pl', 'cz', 'sk', 'hu', 'si', 'ro', 'bg', 'pt', 'dk', 'se', 'fi', 'uk', 'ie', 'lv'];
+const CC = ['ch', 'de', 'fr', 'it', 'es', 'nl', 'be', 'lu', 'pl', 'cz', 'sk', 'hu', 'si', 'ro', 'bg', 'pt', 'dk', 'se', 'fi', 'no', 'uk', 'ie', 'lv', 'gr', 'ee'];
+const GPS = { gr: 1, ee: 1 };
 const KEEP_DAYS = 120;
 const TZ = { fi: 'Europe/Helsinki', se: 'Europe/Stockholm' };
 
@@ -25,6 +28,8 @@ function parseReg(text) {
     (m.get(k) || m.set(k, []).get(k)).push([h0 + +l.slice(0, a) * 1000, v]);
   }
   for (const ev of m.values()) ev.sort((x, y) => x[0] - y[0]);
+  // Norvegia: anche per numero del treno e giorno d'esercizio (vedi keysOf)
+  for (const [k, ev] of [...m]) { const n = /^(\w+):DatedServiceJourney:(\d+)_.*_(\d\d)-(\d\d)-(\d\d)$/.exec(k); if (n) m.set('n:' + n[1] + '|' + n[2] + '|20' + n[3] + n[4] + n[5], ev); }
   return m;
 }
 const dateIn = (ms, tz) => new Date(ms).toLocaleDateString('sv-SE', { timeZone: tz });
@@ -34,14 +39,37 @@ function keysOf(cc, r) {
   if (cc === 'be') k.push('be:o:' + r[4] + '|' + r[r.length - 3] + '|' + dep0);
   if (cc === 'fi' || cc === 'se') { k.push(code.slice(3) + '|' + dateIn(dep0 * 1000, TZ[cc])); return k; }
   if (cc === 'uk') { k.push(code.replace(/^uk:/, '')); return k; }
+  if (cc === 'no') {
+    k.push(code.replace(/^no:/, ''));
+    const n = /^no:(\w+):ServiceJourney:(\d+)_/.exec(code); if (n) k.push('n:' + n[1] + '|' + n[2] + '|' + dateIn(dep0 * 1000, 'Europe/Oslo').replace(/-/g, ''));
+    return k;
+  }
   k.push(code);
   if (cc === 'ro') { const n = (String(r[2]).match(/(\d+)\s*$/) || [])[1]; if (n) k.push('n:' + n.replace(/^0+/, '')); }
   if (cc === 'fr') { const n = code.startsWith('idf:') ? code.slice(4) : (/^OCESN(\d+)/.exec(code) || [])[1]; if (n) k.push('s:' + n + '@' + Math.floor(dep0 / 60)); }
   return k;
 }
+// Grecia, Estonia: ritardo stimato dalla posizione (la stessa regola di gpsDelay in tools/country_data_template.js); pos = id fermata → [lat, lon]
+function gpsDelay(r, lat, lon, ms, pos) {
+  const p = [];
+  for (let i = 4; i + 2 < r.length; i += 3) { const s = String(r[i]), h = s.indexOf('#'); p.push({ s: pos.get(h < 0 ? s : s.slice(0, h)), arr: r[3] + r[i + 1], dep: r[3] + r[i + 2] }); }
+  const kx = Math.cos(lat * Math.PI / 180) * 111.32, ky = 110.57, px = lon * kx, py = lat * ky;
+  let best = null;
+  for (let i = 0; i + 1 < p.length; i++) {
+    const a = p[i].s, b = p[i + 1].s; if (!a || !b) continue;
+    const ax = a[1] * kx, ay = a[0] * ky, dx = b[1] * kx - ax, dy = b[0] * ky - ay, L = dx * dx + dy * dy;
+    const u = L ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L)) : 0;
+    const d = Math.hypot(px - (ax + u * dx), py - (ay + u * dy));
+    if (!best || d < best.d) best = { d, t: p[i].dep + u * (p[i + 1].arr - p[i].dep), end: i + 2 === p.length && u > 0.96 };
+  }
+  if (!best || best.d > 4 || best.end) return null;   // al capolinea il ritardo non si legge (fermo con il GPS acceso)
+  const m = Math.round((ms / 1000 - best.t) / 60);
+  return m < -30 || m > 90 ? null : m < 3 ? 0 : m;
+}
 // ritardo (minuti) di un valore del registro per questa corsa; Polonia e Cechia: dall'ora prevista della prossima fermata
-function delayOf(cc, r, v) {
+function delayOf(cc, r, v, t, pos) {
   if (!v || v[1] === 'C') return null;
+  if (GPS[cc]) return pos && typeof v[2] === 'number' && typeof v[3] === 'number' ? gpsDelay(r, v[2], v[3], t, pos) : null;
   if ((cc === 'pl' || cc === 'cz') && v[0] == null && v[2] != null && v[3]) {
     let i = -1;
     if (cc === 'pl') i = 4 + 3 * v[2];
@@ -53,7 +81,7 @@ function delayOf(cc, r, v) {
   return typeof v[0] === 'number' && v[0] >= -60 && v[0] <= 600 ? v[0] : null;
 }
 // una corsa: { d: ritardo all'arrivo | null, c: soppressa }
-function finalOf(cc, r, reg) {
+function finalOf(cc, r, reg, pos) {
   const dep0 = (r[3] + r[6]) * 1000, arr = (r[3] + r[r.length - 2]) * 1000;
   let d = null, canc = false, seen = false;
   for (const k of keysOf(cc, r)) {
@@ -64,26 +92,57 @@ function finalOf(cc, r, reg) {
       if (!v) continue;
       seen = true;
       if (v[1] === 'C') { canc = true; continue; }
-      const m = delayOf(cc, r, v); if (m != null) { d = m; canc = false; }
+      const m = delayOf(cc, r, v, t, pos); if (m != null) { d = m; canc = false; }
     }
     if (d != null || canc) break;   // trovato con questo codice: gli altri non servono
   }
   return { d, c: canc && d == null, seen };
 }
-function summarize(cc, rows, reg) {
+function add(s, top, d, item) {
+  s[1]++; s[d < 2 ? 3 : d <= 5 ? 4 : 5]++;
+  if (d <= 1) s[6]++; if (d <= 3) s[7]++; if (d <= 5) s[8]++; if (d <= 15) s[9]++;
+  s[10] += Math.max(0, d);
+  if (d >= 30) top.push([...item, d]);
+}
+function summarize(cc, rows, reg, pos) {
   const s = [rows.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = [];
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
-    const f = finalOf(cc, r, reg);
+    const f = finalOf(cc, r, reg, pos);
     if (f.c) { s[2]++; continue; }
     if (f.d == null) continue;
-    const d = f.d; s[1]++;
-    s[d < 2 ? 3 : d <= 5 ? 4 : 5]++;
-    if (d <= 1) s[6]++; if (d <= 3) s[7]++; if (d <= 5) s[8]++; if (d <= 15) s[9]++;
-    s[10] += Math.max(0, d);
-    if (d >= 30) top.push([cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || ''), d]);
+    add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')]);
   }
   return { s, top };
+}
+// Svizzera: orario del giorno (/api/live/tt/<giorno>?c=2: trips [linea, categoria, destinazione, trip_id, fermate]) e registro degli arrivi
+//  (righe JSON ["trip_id|AAAAMMGG", ora del feed, soppressa, [[stop_sequence, ritardo di arrivo in s], …]]): ritardo = quello dell'ultima fermata nell'ultimo stato
+function summarizeCh(tt, text, day) {
+  const last = new Map();
+  for (const l of text.split('\n')) {
+    if (!l || l[0] !== '[') continue;
+    let x; try { x = JSON.parse(l); } catch (e) { continue; }
+    const k = String(x[0]), b = k.lastIndexOf('|'); if (b < 0 || k.slice(b + 1) !== day) continue;
+    const id = k.slice(0, b), o = last.get(id); if (!o || x[1] >= o[1]) last.set(id, x);
+  }
+  const trips = (tt.trips || []).filter((t) => t[1] !== 'BAT');   // battelli fuori: sono statistiche dei treni
+  const s = [trips.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = [];
+  for (const t of trips) {
+    const x = last.get(String(t[3])); if (!x) continue;
+    if (x[2]) { s[2]++; continue; }
+    const st = x[3] || []; if (!st.length) continue;
+    const d = Math.round(st[st.length - 1][1] / 60); if (d < -60 || d > 600) continue;
+    add(s, top, d, ['ch', String(t[0] || t[1] || ''), String(t[2] || '')]);
+  }
+  return { s, top };
+}
+// fermate di un paese (js/<paese>-stations.js: «id|nome|lat|lon»): dalla cartella del sito se c'è, altrimenti da railpulse.ch
+async function stationsOf(cc) {
+  const f = path.join(__dirname, '..', 'js', cc + '-stations.js');
+  const js = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : await (await get(SITE + '/js/' + cc + '-stations.js')).text();
+  const m = new Map(), body = (/=\s*"([\s\S]*)"/.exec(js) || [])[1] || '';
+  for (const l of body.split('\\n')) { const p = l.split('|'); if (p.length >= 4) m.set(p[0], [+p[2], +p[3]]); }
+  return m;
 }
 async function get(url, auth) {
   const r = await fetch(url, { headers: { 'User-Agent': 'railpulse-tools', ...(auth ? { Authorization: 'Bearer ' + KEY } : {}) } });
@@ -96,9 +155,9 @@ async function main() {
   const res = {}, top = [];
   for (const cc of CC) {
     try {
-      const rows = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')).t : (await (await get(SITE + '/api/live/tt/' + cc + '-' + day + '?v=1')).json()).t;
+      const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day, true)).text();
-      const x = summarize(cc, rows || [], parseReg(text));
+      const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, tt.t || [], parseReg(text), GPS[cc] ? await stationsOf(cc) : null);
       res[cc] = x.s; top.push(...x.top);
       const pc = (n) => (x.s[1] ? Math.round((100 * n) / x.s[1]) : 0) + '%';
       console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10]);
@@ -118,5 +177,5 @@ async function main() {
   const r = await fetch(SITE + '/api/live/tt/dlday', { method: 'PUT', body, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
   console.log('caricato:', r.status, await r.text());
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, summarize };
+module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
