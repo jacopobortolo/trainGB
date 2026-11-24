@@ -135,6 +135,50 @@ function merge(shard, list, day) {
   }
   return true;
 }
+// ---- curiosità e record per /stats (dal 24.11.2026): numeri di un giorno per paese, poi riassunti su 7 e 28 giorni (tt:factsraw → tt:facts) ----
+const catOf = (n) => { const s = String(n || ''), i = s.indexOf('|'); if (i > 0) return s.slice(0, i); const m = s.match(/^[A-Za-zÀ-ž]+/); return m ? m[0] : ''; };   // gestore se c'è, altrimenti la categoria (TGV, RE, AVE…)
+const mOf = (hm) => +String(hm).slice(0, 2) * 60 + +String(hm).slice(2);
+// un giorno di un paese: h = 24 ore di arrivo [corse, minuti, oltre 5]; op = per gestore o tipo [corse, minuti, oltre 5, soppresse];
+// st = fermate dove il ritardo cresce [id, nome, minuti guadagnati, passaggi, passaggi con +3 o più]
+function dayFacts(list, names) {
+  const h = Array.from({ length: 24 }, () => [0, 0, 0]), op = {}, st = new Map();
+  for (const x of list) {
+    const c = catOf(x.n), o = c ? (op[c] || (op[c] = [0, 0, 0, 0])) : null;
+    if (x.f === -999) { if (o) o[3]++; continue; }
+    const d = Math.max(0, x.f), hr = Math.floor(mOf(x.tm[x.tm.length - 1]) / 60) % 24;
+    h[hr][0]++; h[hr][1] += d; if (d > 5) h[hr][2]++;
+    if (o) { o[0]++; o[1] += d; if (d > 5) o[2]++; }
+    if (x.dl) for (let j = 1; j < x.dl.length; j++) {
+      const a = x.dl[j - 1], b = x.dl[j]; if (a == null || b == null) continue;
+      const g = b - a, id = x.ids[j], q = st.get(id) || st.set(id, [id, names.get(id) || id, 0, 0, 0]).get(id);
+      q[3]++; if (g > 0) q[2] += g; if (g >= 3) q[4]++;
+    }
+  }
+  const stl = [...st.values()].filter((q) => q[3] >= 8).sort((a, b) => b[2] / b[3] - a[2] / a[3]).slice(0, 40);
+  return { h, op, st: stl };
+}
+// treni della settimana: corse degli ultimi 7 giorni nella storia di un treno
+function weekRuns(t, dn) { const out = []; for (let i = Math.max(0, dn - 6 - t.d0); i < t.f.length && t.d0 + i <= dn; i++) { const v = t.f[i]; if (v != null) out.push(v); } return out; }
+// riassunto per la pagina (funzione pura: provata in tests/run.js)
+function summarizeFacts(raw, day, wk, pct) {
+  const dn = dayNum(day), days = Object.keys(raw.days).filter((d) => dayNum(d) > dn - 28 && dayNum(d) <= dn).sort(), last7 = days.filter((d) => dayNum(d) > dn - 7);
+  const hours = {}, ops = {}, stAll = new Map();
+  for (const d of days) for (const [cc, f] of Object.entries(raw.days[d])) {
+    const H = hours[cc] || (hours[cc] = Array.from({ length: 24 }, () => [0, 0, 0]));
+    f.h.forEach((v, i) => { H[i][0] += v[0]; H[i][1] += v[1]; H[i][2] += v[2]; });
+    if (!last7.includes(d)) continue;
+    const O = ops[cc] || (ops[cc] = {}); for (const [k, v] of Object.entries(f.op)) { const q = O[k] || (O[k] = [0, 0, 0, 0]); for (let i = 0; i < 4; i++) q[i] += v[i]; }
+    for (const q of f.st) { const key = cc + '|' + q[0], z = stAll.get(key) || stAll.set(key, [cc, q[0], q[1], 0, 0, 0]).get(key); z[3] += q[2]; z[4] += q[3]; z[5] += q[4]; }
+  }
+  const out = { v: 1, day, days: days.length, hours: {}, ops: {}, st: [], best: wk.best, worst: wk.worst, pct };
+  for (const [cc, H] of Object.entries(hours)) if (H.reduce((a, v) => a + v[0], 0) >= 300) out.hours[cc] = H.map((v) => [v[0], v[0] ? Math.round((10 * v[1]) / v[0]) / 10 : null, v[0] ? Math.round((100 * v[2]) / v[0]) : null]);
+  for (const [cc, O] of Object.entries(ops)) {
+    const rows = Object.entries(O).filter(([, v]) => v[0] >= 50).map(([k, v]) => [k, v[0], Math.round((10 * v[1]) / v[0]) / 10, Math.round((100 * (v[0] - v[2])) / v[0]), v[3]]).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (rows.length >= 2) out.ops[cc] = rows;
+  }
+  out.st = [...stAll.values()].filter((z) => z[4] >= 30).map((z) => [z[0], z[1], z[2], Math.round((10 * z[3]) / z[4]) / 10, z[4], Math.round((100 * z[5]) / z[4])]).sort((a, b) => b[3] - a[3]).slice(0, 15);
+  return out;
+}
 // nomi delle fermate (js/<paese>-stations.js «id|nome|lat|lon»)
 async function namesOf(cc) {
   const f = path.join(__dirname, '..', 'js', cc + '-stations.js');
@@ -164,7 +208,7 @@ async function main() {
   const day = args.find((a) => /^\d{8}$/.test(a)) || new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' }).replace(/-/g, '');
   const up = args.includes('--upload'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
-  const index = {}; let wrote = 0, bytes = 0;
+  const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0;
   for (const cc of only) {
     let list = null, names = new Map(), rows = 0;
     try {
@@ -178,7 +222,8 @@ async function main() {
     } catch (e) { console.log(cc, 'saltato:', e.message); }
     // anche un paese saltato oggi resta nell'indice di ricerca: le sue fette si leggono comunque
     const by = new Map(); for (const x of list || []) (by.get(x.sh) || by.set(x.sh, []).get(x.sh)).push(x);
-    let ntr = 0;
+    if (list) factsDay[cc] = dayFacts(list, names);
+    let ntr = 0; const means = [];
     try {
       for (let sh = 0; sh < TRN_N[cc]; sh++) {
         const name = cc + '/' + sh;
@@ -186,16 +231,40 @@ async function main() {
         const changed = list ? merge(shard, by.get(sh) || [], day) : false;
         for (const [k, t] of Object.entries(shard.t)) {
           if (changed) t.nm = t.ids.map((id, j) => names.get(id) || t.nm[j] || id);
+          { // treni della settimana (almeno 5 corse negli ultimi 7 giorni) e ritardo medio di ogni treno negli ultimi 28 giorni (almeno 3 corse) per «batte il …%»
+            const w = weekRuns(t, dn), ok = w.filter((v) => v !== -999), dur = (mOf(t.tm[t.tm.length - 1]) - mOf(t.tm[0]) + 1440) % 1440;
+            if (ok.length >= 5) {
+              const mean = ok.reduce((a, v) => a + Math.max(0, v), 0) / ok.length, item = [cc, k, t.n, t.nm[0], t.nm[t.nm.length - 1], ok.length, Math.round(mean * 10) / 10, dur, w.length - ok.length];
+              if (ok.every((v) => v <= 2) && dur >= 120) best.push(item);
+              worst.push(item);
+            }
+            const m28 = []; for (let i = Math.max(0, dn - 27 - t.d0); i < t.f.length; i++) { const v = t.f[i]; if (v != null && v !== -999) m28.push(Math.max(0, v)); }
+            if (m28.length >= 3) means.push(m28.reduce((a, v) => a + v, 0) / m28.length);
+          }
           const num = trnNum(t.n); if (num == null) continue; ntr++;
           (index[trnBucket(num)] || (index[trnBucket(num)] = [])).push([cc, k, t.n, t.nm[0], t.nm[t.nm.length - 1], t.tm[0], num]);
         }
         if (up && changed) { bytes += await putShard(name, shard); wrote++; }
       }
     } catch (e) { console.log(cc, 'archivio:', e.message); }
+    if (means.length >= 50) { means.sort((a, b) => a - b); pct[cc] = Array.from({ length: 21 }, (_, i) => Math.round(10 * means[Math.min(means.length - 1, Math.floor((i / 20) * (means.length - 1)))]) / 10); }
     console.log(cc, 'treni del giorno', list ? list.length : '-', 'su', rows, '· in archivio con numero', ntr);
   }
   if (up && only.length === Object.keys(TRN_N).length) for (let b = 0; b < 100; b++) { const bb = String(b).padStart(2, '0'); bytes += await putShard('i/' + bb, { v: 1, day, e: index[bb] || [] }); wrote++; }
   console.log('fette scritte', wrote, 'byte', bytes);
+  // curiosità e record: giorni grezzi (tt:factsraw, solo per questo lavoro) e riassunto per /stats (tt:facts)
+  if (only.length === Object.keys(TRN_N).length) {
+    let raw = { v: 1, days: {} };
+    if (up) try { const j = await (await get(SITE + '/api/live/tt/factsraw?x=' + Date.now())).json(); if (j && j.days) raw = j; } catch (e) { /* primo giorno */ }
+    raw.days[day] = factsDay; for (const d of Object.keys(raw.days)) if (dayNum(d) <= dn - 28) delete raw.days[d];
+    best.sort((a, b) => b[7] - a[7] || a[6] - b[6]); worst.sort((a, b) => b[6] - a[6] || b[5] - a[5]);
+    const facts = summarizeFacts(raw, day, { best: best.slice(0, 10), worst: worst.slice(0, 10) }, pct);
+    console.log('curiosità: ore per', Object.keys(facts.hours).length, 'paesi, gestori per', Object.keys(facts.ops).length, ', fermate', facts.st.length, ', treni migliori', facts.best.length, ', peggiori', facts.worst.length);
+    if (up) for (const [nm, obj] of [['factsraw', raw], ['facts', facts]]) {
+      const r = await fetch(SITE + '/api/live/tt/' + nm, { method: 'PUT', body: zlib.gzipSync(JSON.stringify(obj)), headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
+      console.log(nm, '→', r.status, (await r.text()).slice(0, 120));
+    }
+  }
 }
-module.exports = { perStop, numOf, trainsDay, trainsCh, merge, dayNum };
+module.exports = { dayFacts, summarizeFacts, weekRuns, catOf, perStop, numOf, trainsDay, trainsCh, merge, dayNum };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
