@@ -1,6 +1,6 @@
 name: dl-day
 # Once a day: the delays of every train of yesterday, from the RailPulse delay log joined with the day's timetable (dl_day.js),
-# uploaded to railpulse.ch/api/live/tt/dlday for the page railpulse.ch/stats. Started by the RailPulse scheduler (workflow_dispatch).
+# uploaded to railpulse.ch/api/live/tt/dlday for the page railpulse.ch/stats; then the per-train history (trn_build.js) for railpulse.ch/train. Started by the RailPulse scheduler (workflow_dispatch).
 on:
   workflow_dispatch:
     inputs:
@@ -11,11 +11,16 @@ concurrency:
 jobs:
   day:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - run: node dl_day.js ${{ inputs.day }} --upload
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
+      # history of every train (delay at every stop, 180 days) for railpulse.ch/train, in D1 via /api/live/trn/...
+      - run: node trn_build.js ${{ inputs.day }} --upload
+        if: always()
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
