@@ -144,6 +144,7 @@ async function stationsOf(cc) {
   for (const l of body.split('\\n')) { const p = l.split('|'); if (p.length >= 4) m.set(p[0], [+p[2], +p[3]]); }
   return m;
 }
+const usable = (s) => !(s[0] >= 50 && s[1] + s[2] < 0.15 * s[0]);   // [corse, con ritardo, soppresse, …]
 async function get(url, auth) {
   const r = await fetch(url, { headers: { 'User-Agent': 'railpulse-tools', ...(auth ? { Authorization: 'Bearer ' + KEY } : {}) } });
   if (!r.ok) throw new Error(url + ' → HTTP ' + r.status);
@@ -158,6 +159,8 @@ async function main() {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day, true)).text();
       const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, tt.t || [], parseReg(text), GPS[cc] ? await stationsOf(cc) : null);
+      // meno del 15 % dei treni dell'orario con un dato = orario o feed rotti quel giorno (23.11: Spagna 6 su 3267, Irlanda e Grecia 0): il paese non entra, numeri sbagliati no
+      if (!usable(x.s)) { console.log(cc, 'escluso: solo', x.s[1] + x.s[2], 'treni con un dato su', x.s[0]); continue; }
       res[cc] = x.s; top.push(...x.top);
       const pc = (n) => (x.s[1] ? Math.round((100 * n) / x.s[1]) : 0) + '%';
       console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10]);
@@ -177,5 +180,5 @@ async function main() {
   const r = await fetch(SITE + '/api/live/tt/dlday', { method: 'PUT', body, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
   console.log('caricato:', r.status, await r.text());
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf };
+module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf, usable };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
