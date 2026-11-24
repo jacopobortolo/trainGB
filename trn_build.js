@@ -138,16 +138,38 @@ function merge(shard, list, day) {
 // ---- curiosità e record per /stats (dal 24.11.2026): numeri di un giorno per paese, poi riassunti su 7 e 28 giorni (tt:factsraw → tt:facts) ----
 const catOf = (n) => { const s = String(n || ''), i = s.indexOf('|'); if (i > 0) return s.slice(0, i); const m = s.match(/^[A-Za-zÀ-ž]+/); return m ? m[0] : ''; };   // gestore se c'è, altrimenti la categoria (TGV, RE, AVE…)
 const mOf = (hm) => +String(hm).slice(0, 2) * 60 + +String(hm).slice(2);
+// zone dei paesi (js/eu-regions.js, tools/build_eu_regions.py): ogni fermata alla sua zona, per la mappa della puntualità
+let REG = null;
+async function regions() {
+  if (REG) return REG;
+  const f = path.join(__dirname, '..', 'js', 'eu-regions.js');
+  const js = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : await (await get(SITE + '/js/eu-regions.js')).text();
+  REG = JSON.parse(js.slice(js.indexOf('{', js.indexOf('TB_EUREG')), js.lastIndexOf('};') + 1));
+  return REG;
+}
+function pip(x, y, r) { let c = false; for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) { const xi = r[i], yi = r[i + 1], xj = r[j], yj = r[j + 1]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; }
+// funzione id fermata → id zona (o null) per un paese; pos = id → [lat, lon]
+function zoneFinder(zones, pos) {
+  const Z = (zones || []).map((z) => { const rings = z.slice(2); let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const r of rings) for (let i = 0; i < r.length; i += 2) { x0 = Math.min(x0, r[i]); x1 = Math.max(x1, r[i]); y0 = Math.min(y0, r[i + 1]); y1 = Math.max(y1, r[i + 1]); } return { id: z[0], rings, bb: [x0, y0, x1, y1] }; });
+  const memo = new Map();
+  return (id) => {
+    if (memo.has(id)) return memo.get(id);
+    const p = pos && pos.get(id); let hit = null;
+    if (p) for (const z of Z) { if (p[1] < z.bb[0] || p[1] > z.bb[2] || p[0] < z.bb[1] || p[0] > z.bb[3]) continue; if (z.rings.some((r) => pip(p[1], p[0], r))) { hit = z.id; break; } }
+    memo.set(id, hit); return hit;
+  };
+}
 // un giorno di un paese: h = 24 ore di arrivo [corse, minuti, oltre 5]; op = per gestore o tipo [corse, minuti, oltre 5, soppresse];
-// st = fermate dove il ritardo cresce [id, nome, minuti guadagnati, passaggi, passaggi con +3 o più]
-function dayFacts(list, names) {
-  const h = Array.from({ length: 24 }, () => [0, 0, 0]), op = {}, st = new Map();
+// st = fermate dove il ritardo cresce [id, nome, minuti guadagnati, passaggi, passaggi con +3 o più]; rg = per zona [passaggi, entro 5 min, minuti]
+function dayFacts(list, names, zoneOf) {
+  const h = Array.from({ length: 24 }, () => [0, 0, 0]), op = {}, st = new Map(), rg = {};
   for (const x of list) {
     const c = catOf(x.n), o = c ? (op[c] || (op[c] = [0, 0, 0, 0])) : null;
     if (x.f === -999) { if (o) o[3]++; continue; }
     const d = Math.max(0, x.f), hr = Math.floor(mOf(x.tm[x.tm.length - 1]) / 60) % 24;
     h[hr][0]++; h[hr][1] += d; if (d > 5) h[hr][2]++;
     if (o) { o[0]++; o[1] += d; if (d > 5) o[2]++; }
+    if (x.dl && zoneOf) x.dl.forEach((v, j) => { if (v == null) return; const z = zoneOf(x.ids[j]); if (z == null) return; const q = rg[z] || (rg[z] = [0, 0, 0]); q[0]++; if (v <= 5) q[1]++; q[2] += Math.max(0, v); });
     if (x.dl) for (let j = 1; j < x.dl.length; j++) {
       const a = x.dl[j - 1], b = x.dl[j]; if (a == null || b == null) continue;
       const g = b - a, id = x.ids[j], q = st.get(id) || st.set(id, [id, names.get(id) || id, 0, 0, 0]).get(id);
@@ -155,27 +177,29 @@ function dayFacts(list, names) {
     }
   }
   const stl = [...st.values()].filter((q) => q[3] >= 8).sort((a, b) => b[2] / b[3] - a[2] / a[3]).slice(0, 40);
-  return { h, op, st: stl };
+  return { h, op, st: stl, rg };
 }
 // treni della settimana: corse degli ultimi 7 giorni nella storia di un treno
 function weekRuns(t, dn) { const out = []; for (let i = Math.max(0, dn - 6 - t.d0); i < t.f.length && t.d0 + i <= dn; i++) { const v = t.f[i]; if (v != null) out.push(v); } return out; }
 // riassunto per la pagina (funzione pura: provata in tests/run.js)
 function summarizeFacts(raw, day, wk, pct) {
   const dn = dayNum(day), days = Object.keys(raw.days).filter((d) => dayNum(d) > dn - 28 && dayNum(d) <= dn).sort(), last7 = days.filter((d) => dayNum(d) > dn - 7);
-  const hours = {}, ops = {}, stAll = new Map();
+  const hours = {}, ops = {}, stAll = new Map(), rgs = {};
   for (const d of days) for (const [cc, f] of Object.entries(raw.days[d])) {
     const H = hours[cc] || (hours[cc] = Array.from({ length: 24 }, () => [0, 0, 0]));
     f.h.forEach((v, i) => { H[i][0] += v[0]; H[i][1] += v[1]; H[i][2] += v[2]; });
     if (!last7.includes(d)) continue;
+    const R = rgs[cc] || (rgs[cc] = {}); for (const [z, v] of Object.entries(f.rg || {})) { const q = R[z] || (R[z] = [0, 0, 0]); q[0] += v[0]; q[1] += v[1]; q[2] += v[2]; }
     const O = ops[cc] || (ops[cc] = {}); for (const [k, v] of Object.entries(f.op)) { const q = O[k] || (O[k] = [0, 0, 0, 0]); for (let i = 0; i < 4; i++) q[i] += v[i]; }
     for (const q of f.st) { const key = cc + '|' + q[0], z = stAll.get(key) || stAll.set(key, [cc, q[0], q[1], 0, 0, 0]).get(key); z[3] += q[2]; z[4] += q[3]; z[5] += q[4]; }
   }
-  const out = { v: 1, day, days: days.length, hours: {}, ops: {}, st: [], best: wk.best, worst: wk.worst, pct };
+  const out = { v: 1, day, days: days.length, hours: {}, ops: {}, st: [], rg: {}, best: wk.best, worst: wk.worst, pct };
   for (const [cc, H] of Object.entries(hours)) if (H.reduce((a, v) => a + v[0], 0) >= 300) out.hours[cc] = H.map((v) => [v[0], v[0] ? Math.round((10 * v[1]) / v[0]) / 10 : null, v[0] ? Math.round((100 * v[2]) / v[0]) : null]);
   for (const [cc, O] of Object.entries(ops)) {
     const rows = Object.entries(O).filter(([, v]) => v[0] >= 50).map(([k, v]) => [k, v[0], Math.round((10 * v[1]) / v[0]) / 10, Math.round((100 * (v[0] - v[2])) / v[0]), v[3]]).sort((a, b) => b[1] - a[1]).slice(0, 8);
     if (rows.length >= 2) out.ops[cc] = rows;
   }
+  for (const [cc, R] of Object.entries(rgs)) { const o = {}; for (const [z, v] of Object.entries(R)) if (v[0] >= 30) o[z] = [v[0], Math.round((100 * v[1]) / v[0]), Math.round((10 * v[2]) / v[0]) / 10]; if (Object.keys(o).length) out.rg[cc] = o; }   // per zona: passaggi, % entro 5 min, ritardo medio (7 giorni)
   out.st = [...stAll.values()].filter((z) => z[4] >= 30).map((z) => [z[0], z[1], z[2], Math.round((10 * z[3]) / z[4]) / 10, z[4], Math.round((100 * z[5]) / z[4])]).sort((a, b) => b[3] - a[3]).slice(0, 15);
   return out;
 }
@@ -208,6 +232,7 @@ async function main() {
   const day = args.find((a) => /^\d{8}$/.test(a)) || new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' }).replace(/-/g, '');
   const up = args.includes('--upload'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
+  let chPos = null;
   const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0;
   for (const cc of only) {
     let list = null, names = new Map(), rows = 0;
@@ -219,10 +244,18 @@ async function main() {
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
       if (!D.usable([rows, list.length, 0])) { console.log(cc, 'escluso: solo', list.length, 'treni con un dato su', rows); list = null; }
       names = cc === 'ch' ? new Map((tt.stops || []).map((s) => [String(s[0]), s[1]])) : await namesOf(cc).catch(() => new Map());
+      if (cc === 'ch') chPos = new Map((tt.stops || []).map((s) => [String(s[0]), [s[2], s[3]]]));
     } catch (e) { console.log(cc, 'saltato:', e.message); }
     // anche un paese saltato oggi resta nell'indice di ricerca: le sue fette si leggono comunque
     const by = new Map(); for (const x of list || []) (by.get(x.sh) || by.set(x.sh, []).get(x.sh)).push(x);
-    if (list) factsDay[cc] = dayFacts(list, names);
+    if (list) {
+      let zoneOf = null;
+      try {
+        const R = await regions(), pos = cc === 'ch' ? chPos : await D.stationsOf(cc);
+        zoneOf = zoneFinder(R[cc], pos);
+      } catch (e) { console.log(cc, 'zone:', e.message); }
+      factsDay[cc] = dayFacts(list, names, zoneOf);
+    }
     let ntr = 0; const means = [];
     try {
       for (let sh = 0; sh < TRN_N[cc]; sh++) {
@@ -266,5 +299,5 @@ async function main() {
     }
   }
 }
-module.exports = { dayFacts, summarizeFacts, weekRuns, catOf, perStop, numOf, trainsDay, trainsCh, merge, dayNum };
+module.exports = { zoneFinder, pip, dayFacts, summarizeFacts, weekRuns, catOf, perStop, numOf, trainsDay, trainsCh, merge, dayNum };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
