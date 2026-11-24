@@ -74,8 +74,9 @@ def from_gtfs_de(ids, days):
     return d, f.header.timestamp * 1000, len(f.entity)
 
 
-def from_db(rows, stations=None, sess=None, now=None):   # gli ultimi tre parametri servono solo alle prove (tests/de_rt_test.py)
-    """{trip_id: ritardo in minuti} dalle partenze e dagli arrivi delle stazioni (API OpenBoards di DB)."""
+def from_db(rows, stations=None, sess=None, now=None, nums=None):   # stations, sess e now servono solo alle prove (tests/de_rt_test.py)
+    """{trip_id: ritardo in minuti} dalle partenze e dagli arrivi delle stazioni (API OpenBoards di DB).
+    nums (dizionario, facoltativo) = {trip_id: numero del treno} (journeyNumber: l'orario di gtfs.de ha solo la linea, «RE17»; serve allo storico per treno, railpulse.ch/train)."""
     cid, key = os.environ.get('DB_CLIENT_ID'), os.environ.get('DB_API_KEY')
     path = next((p for p in (os.path.join(HERE, 'de_db_stations.json'), os.path.join(HERE, 'tools', 'de_db_stations.json')) if os.path.exists(p)), None)
     if stations is None:
@@ -166,7 +167,8 @@ def from_db(rows, stations=None, sess=None, now=None):   # gli ultimi tre parame
                     continue
                 info = e.get('journeyInfo') or {}
                 st = info.get('scheduledStartTime')
-                res.append((i, kind, pt, dl, int(ts(st)) // 60 if st else None, norm(names.get((info.get('destination') or {}).get('evaNumber'), ''))))
+                jn = info.get('headerJourneyNumber') or ((info.get('transportAtStart') or {}).get('journeyNumber'))
+                res.append((i, kind, pt, dl, int(ts(st)) // 60 if st else None, norm(names.get((info.get('destination') or {}).get('evaNumber'), '')), jn if isinstance(jn, int) else None))
             except (ValueError, TypeError, AttributeError):
                 continue
         full = [lastt[tp] for tp, n in per.items() if n >= 50 and tp in lastt]
@@ -184,11 +186,13 @@ def from_db(rows, stations=None, sess=None, now=None):   # gli ultimi tre parame
     obs, seen, hit = {}, 0, 0   # codice -> [(ora prevista, ritardo)]
     with ThreadPoolExecutor(max_workers=8) as ex:
         for res in ex.map(read, jobs):
-            for i, kind, pt, dl, start, dest in res:
+            for i, kind, pt, dl, start, dest, jn in res:
                 seen += 1
                 code = match(i, kind, pt, start, dest)
                 if code:
                     obs.setdefault(code, []).append((pt, dl))
+                    if jn and nums is not None:
+                        nums[code] = jn
                     hit += 1
     out = {}
     for code, lst in obs.items():
@@ -231,9 +235,13 @@ def main():
     if early:
         upload(dict(d), 'subito:')
     try:
-        for code, delay in from_db(rows).items():
+        nums = {}
+        for code, delay in from_db(rows, nums=nums).items():
             if code not in d or (d[code][0] is None and d[code][3] != 'C'):
                 d[code] = [delay, None, None, 'R']
+        for code, jn in nums.items():   # numero del treno come quinto campo: il registro dei ritardi (log/index.js) lo conserva, tools/trn_build.js lo usa
+            if code in d:
+                d[code] = list(d[code][:4]) + [jn]
     except Exception as e:   # un guasto di DB non blocca gtfs.de
         print('DB: errore', e)
     upload(d, 'completo:')

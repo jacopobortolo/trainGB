@@ -55,6 +55,12 @@ function perStop(cc, r, reg, pos) {
   }
   return null;
 }
+// Germania: l'orario di gtfs.de ha solo la linea («RE17»); il numero del treno arriva da DB OpenBoards (tools/de_rt.py) come terzo campo del valore nel registro
+function numOf(cc, r, reg) {
+  if (cc !== 'de') return null;
+  for (const k of D.keysOf(cc, r)) for (const [, v] of reg.get(k) || []) if (v && typeof v[2] === 'number' && v[2] > 0) return v[2];
+  return null;
+}
 // tutti i treni di un giorno, formato comune: [{ k, sh, n, ids, tm, f, c, dl }]
 function trainsDay(cc, rows, reg, pos) {
   const out = [];
@@ -64,7 +70,8 @@ function trainsDay(cc, rows, reg, pos) {
     const ids = [], tm = [];
     for (let i = 4; i + 2 < r.length; i += 3) { ids.push(trnSid(r[i])); tm.push(trnHm(cc, (r[3] + (i === 4 ? r[i + 2] : r[i + 1])) * 1000)); }
     const o = ids[0], d = ids[ids.length - 1];
-    out.push({ k: trnKey(o, tm[0], d), sh: trnShard(cc, o, d), n: String(r[2] || ''), ids, tm, f: fin.c ? -999 : fin.d, c: fin.c, dl: fin.c ? null : perStop(cc, r, reg, pos) });
+    let n = String(r[2] || ''); const jn = numOf(cc, r, reg); if (jn && trnNum(n) !== jn) n += ' ' + jn;   // «RE17 10429»: si cerca per numero
+    out.push({ k: trnKey(o, tm[0], d), sh: trnShard(cc, o, d), n, ids, tm, f: fin.c ? -999 : fin.d, c: fin.c, dl: fin.c ? null : perStop(cc, r, reg, pos) });
   }
   return out;
 }
@@ -190,5 +197,5 @@ async function main() {
   if (up && only.length === Object.keys(TRN_N).length) for (let b = 0; b < 100; b++) { const bb = String(b).padStart(2, '0'); bytes += await putShard('i/' + bb, { v: 1, day, e: index[bb] || [] }); wrote++; }
   console.log('fette scritte', wrote, 'byte', bytes);
 }
-module.exports = { perStop, trainsDay, trainsCh, merge, dayNum };
+module.exports = { perStop, numOf, trainsDay, trainsCh, merge, dayNum };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
