@@ -1,0 +1,20 @@
+name: at-rt
+# Delays of the Styrian trains (GKB and Steiermarkbahn: S-Bahn Steiermark and regional trains) from the GTFS-Realtime feed of the
+# Verkehrsverbund Steiermark (efa.verbundlinie.at, ports not reachable from Cloudflare Workers) -> railpulse.ch/api/live/tt/at-rt
+# Started by the RailPulse scheduler (workflow_dispatch) only while someone is watching the Austrian map; ~15 kB per run.
+on:
+  workflow_dispatch:
+concurrency:
+  group: at-rt
+  cancel-in-progress: false
+jobs:
+  rt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests && python at_rt.py
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}

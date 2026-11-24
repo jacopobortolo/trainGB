@@ -11,7 +11,7 @@
 // Una copia identica sta nel repository pubblico trainGB (workflow dl-day.yml): se cambia, ricopiarla.
 const fs = require('fs'), path = require('path');
 const SITE = process.env.SITE || 'https://railpulse.ch', KEY = process.env.SOCIAL_CRON_KEY || '';
-const CC = ['ch', 'de', 'fr', 'it', 'es', 'nl', 'be', 'lu', 'pl', 'cz', 'sk', 'hu', 'si', 'ro', 'bg', 'pt', 'dk', 'se', 'fi', 'no', 'uk', 'ie', 'lv', 'gr', 'ee'];
+const CC = ['ch', 'de', 'fr', 'it', 'es', 'nl', 'be', 'lu', 'pl', 'cz', 'sk', 'hu', 'si', 'ro', 'bg', 'pt', 'dk', 'se', 'fi', 'no', 'uk', 'ie', 'lv', 'gr', 'ee'];   // non l'Austria: solo i treni della Stiria hanno i ritardi, il riepilogo del paese sarebbe falso (sono nello storico per treno, tools/trn_build.js)
 const GPS = { gr: 1, ee: 1 };
 const KEEP_DAYS = 120;
 // chiave del treno per la pagina /train (partenza | HHMM locale | arrivo): js/trn.js nel sito, trn.js accanto a questo file in trainGB

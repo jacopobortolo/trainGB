@@ -4,7 +4,7 @@
 // Il blocco tra /*TRN*/ e /*/TRN*/ è copiato IDENTICO in tools/trn_build.js (una prova controlla che siano uguali).
 (function () {
 /*TRN*/
-const TRN_N = { de: 128, uk: 64, fr: 48, it: 32, cz: 32, ch: 32, es: 24, pl: 24, nl: 24, be: 16, dk: 16, hu: 16, sk: 16, se: 16, no: 16, fi: 8, ro: 8, pt: 8, ie: 8, bg: 8, si: 8, lu: 8, lv: 8, gr: 8, ee: 8 };
+const TRN_N = { de: 128, uk: 64, fr: 48, it: 32, cz: 32, ch: 32, es: 24, pl: 24, nl: 24, be: 16, dk: 16, hu: 16, sk: 16, se: 16, no: 16, fi: 8, ro: 8, pt: 8, ie: 8, bg: 8, si: 8, lu: 8, lv: 8, gr: 8, ee: 8, at: 16 };
 const TRN_TZ = { uk: 'Europe/London', ie: 'Europe/Dublin', pt: 'Europe/Lisbon', fi: 'Europe/Helsinki', ee: 'Europe/Tallinn', lv: 'Europe/Riga', lt: 'Europe/Vilnius', ro: 'Europe/Bucharest', bg: 'Europe/Sofia', gr: 'Europe/Athens', ua: 'Europe/Kyiv', md: 'Europe/Chisinau', tr: 'Europe/Istanbul' };
 const trnFmt = {};
 function trnHm(cc, ms) {   // ora locale HHMM di un istante (ms)

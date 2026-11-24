@@ -14,7 +14,7 @@ const D = require('./dl_day.js');
 const SITE = process.env.SITE || 'https://railpulse.ch', KEY = process.env.SOCIAL_CRON_KEY || '';
 const KEEP = 180, RECENT = 14, MONTHS = 6;
 /*TRN*/
-const TRN_N = { de: 128, uk: 64, fr: 48, it: 32, cz: 32, ch: 32, es: 24, pl: 24, nl: 24, be: 16, dk: 16, hu: 16, sk: 16, se: 16, no: 16, fi: 8, ro: 8, pt: 8, ie: 8, bg: 8, si: 8, lu: 8, lv: 8, gr: 8, ee: 8 };
+const TRN_N = { de: 128, uk: 64, fr: 48, it: 32, cz: 32, ch: 32, es: 24, pl: 24, nl: 24, be: 16, dk: 16, hu: 16, sk: 16, se: 16, no: 16, fi: 8, ro: 8, pt: 8, ie: 8, bg: 8, si: 8, lu: 8, lv: 8, gr: 8, ee: 8, at: 16 };
 const TRN_TZ = { uk: 'Europe/London', ie: 'Europe/Dublin', pt: 'Europe/Lisbon', fi: 'Europe/Helsinki', ee: 'Europe/Tallinn', lv: 'Europe/Riga', lt: 'Europe/Vilnius', ro: 'Europe/Bucharest', bg: 'Europe/Sofia', gr: 'Europe/Athens', ua: 'Europe/Kyiv', md: 'Europe/Chisinau', tr: 'Europe/Istanbul' };
 const trnFmt = {};
 function trnHm(cc, ms) {   // ora locale HHMM di un istante (ms)
@@ -239,6 +239,7 @@ async function main() {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day, true)).text();
+      if (cc === 'at') tt.t = (tt.t || []).filter((r) => String(r[0]).includes(':stv:'));   // Austria: ritardi solo per i treni della Stiria (GKB e Steiermarkbahn, tools/at_rt.py)
       list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, tt.t || [], D.parseReg(text), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
       rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : (tt.t || []).length;
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
