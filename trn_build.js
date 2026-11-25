@@ -36,6 +36,16 @@ const dayNum = (d) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8
 
 // ritardo (minuti) a ogni fermata di una corsa del formato comune; null dove non c'è ancora nessun dato
 function perStop(cc, r, reg, pos) {
+  const dl = perStopReg(cc, r, reg, pos);
+  if (cc !== 'no' || !reg.noq) return dl;
+  // Norvegia: dove il registro ha l'orario reale di una fermata (tools/no_rt.py) vale quello, altrove l'ultimo ritardo visto prima del passaggio
+  const m = D.noStops(r, reg); if (!m) return dl;
+  const out = dl || new Array(Math.floor((r.length - 4) / 3)).fill(null);
+  for (let j = 0; j < out.length; j++) { const v = m.get(r[4 + 3 * j]); if (v != null) out[j] = v; }
+  return out;
+}
+function perStopReg(cc, r, reg, pos) {
+  if (reg.exact) { const x = D.exactOf(r, reg.exact); if (x && x.dl) return x.dl; }   // Finlandia, Svezia: orario reale di ogni stazione dalla fonte (tools/dl_day.js)
   const n = Math.floor((r.length - 4) / 3), dep0 = (r[3] + r[6]) * 1000;
   for (const k of D.keysOf(cc, r)) {
     const ev = reg.get(k); if (!ev) continue;
@@ -267,7 +277,7 @@ async function main() {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + D.toHour(day), true)).text();
-      list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, tt.t || [], D.parseReg(text), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
+      list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, tt.t || [], await D.regOf(cc, text, day, dir), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
       rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : (tt.t || []).length;
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
       if (!D.usable([rows, list.length, 0])) { console.log(cc, 'escluso: solo', list.length, 'treni con un dato su', rows); list = null; }
