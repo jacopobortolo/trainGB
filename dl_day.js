@@ -109,8 +109,21 @@ function add(s, top, d, item, key) {   // top = [paese, treno, destinazione, min
   s[10] += Math.max(0, d);
   if (d >= 30) top.push(key ? [...item, d, key] : [...item, d]);
 }
+// Gran Bretagna (dal 25.11.2026): gli eventi delle bacheche («b:<operatore>|<capolinea>|<arrivo>», log/index.js) si uniscono a quelli
+// dell'istantanea oraria (rid) della stessa corsa, in ordine di tempo: per ogni fermata vale l'ultimo ritardo visto, da qualunque fonte.
+function boardKey(r) { return 'b:' + r[2] + '|' + r[r.length - 3] + '|' + (r[3] + r[r.length - 2]); }
+function joinUk(rows, reg) {
+  for (const r of rows) {
+    if (!Array.isArray(r) || r.length < 10) continue;
+    const b = reg.get(boardKey(r)); if (!b) continue;
+    const rid = String(r[0]).replace(/^uk:/, ''), a = reg.get(rid);
+    reg.set(rid, a ? a.concat(b).sort((x, y) => x[0] - y[0]) : b.slice());
+  }
+  return reg;
+}
 function summarize(cc, rows, reg, pos) {
   const s = [rows.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = [];
+  if (cc === 'uk') joinUk(rows, reg);
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
     const f = finalOf(cc, r, reg, pos);
@@ -196,5 +209,5 @@ async function main() {
   const r = await fetch(SITE + '/api/live/tt/dlday', { method: 'PUT', body, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
   console.log('caricato:', r.status, await r.text());
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
