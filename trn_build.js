@@ -65,6 +65,7 @@ function numOf(cc, r, reg) {
 // tutti i treni di un giorno, formato comune: [{ k, sh, n, ids, tm, f, c, dl }]
 function trainsDay(cc, rows, reg, pos) {
   const out = [];
+  if (cc === 'uk') D.joinUk(rows, reg);   // bacheche + istantanea oraria, in ordine di tempo (tools/dl_day.js)
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
     const fin = D.finalOf(cc, r, reg, pos); if (fin.d == null && !fin.c) continue;   // nessun dato: non entra
