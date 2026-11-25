@@ -57,6 +57,7 @@ function perStop(cc, r, reg, pos) {
 }
 // Germania: l'orario di gtfs.de ha solo la linea («RE17»); il numero del treno arriva da DB OpenBoards (tools/de_rt.py) come terzo campo del valore nel registro
 function numOf(cc, r, reg) {
+  if (cc === 'no') { const m = /^no:(VYG|GOA|SJN):ServiceJourney:(\d+)[-_]/.exec(String(r[0])); return m ? +m[2] : null; }   // Norvegia: il nome è la linea («F4»), il numero sta nel codice → «F4 601» (dal 25.11.2026)
   if (cc !== 'de') return null;
   for (const k of D.keysOf(cc, r)) for (const [, v] of reg.get(k) || []) if (v && typeof v[2] === 'number' && v[2] > 0) return v[2];
   return null;
