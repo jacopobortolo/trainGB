@@ -226,7 +226,7 @@ function add(s, top, d, item, key) {   // top = [paese, treno, destinazione, min
 }
 // Gran Bretagna (dal 25.11.2026): gli eventi delle bacheche («b:<operatore>|<capolinea>|<arrivo>», log/index.js) si uniscono a quelli
 // dell'istantanea oraria (rid) della stessa corsa, in ordine di tempo: per ogni fermata vale l'ultimo ritardo visto, da qualunque fonte.
-function boardKey(r) { return 'b:' + r[2] + '|' + r[r.length - 3] + '|' + (r[3] + r[r.length - 2]); }
+function boardKey(r) { return 'b:' + String(r[2]).split('|')[0] + '|' + r[r.length - 3] + '|' + (r[3] + r[r.length - 2]); }   // r[2] = «GR» o, dal 25.11.2026, «GR|1S12» (impresa e headcode)
 function joinUk(rows, reg) {
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
