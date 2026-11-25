@@ -121,11 +121,11 @@ function unmerge(shard, dn, mon) {
 }
 // unisce i treni del giorno a una fetta dell'archivio (funzione pura: provata in tests/run.js)
 // final = passaggio di mezzogiorno (dal 25.11.2026): un giorno entrato di notte come provvisorio (shard.prov) viene tolto e rimesso con i dati completi
-function merge(shard, list, day, final = true) {
+function merge(shard, list, day, final = true, redo = false) {   // redo: rifà anche un giorno definitivo (correzioni a mano dei dati, --redo)
   const dn = dayNum(day), mon = +day.slice(0, 6);
   shard.prov = shard.prov || [];
   if (shard.days.includes(dn)) {   // giorno già elaborato: le medie per fermata non vanno contate due volte
-    if (!final || !shard.prov.includes(dn)) return false;
+    if (!final || !(redo || shard.prov.includes(dn))) return false;
     unmerge(shard, dn, mon);
   }
   shard.days = shard.days.concat(dn).filter((x, i, a) => x > dn - KEEP && a.indexOf(x) === i).sort((a, b) => a - b);
@@ -251,7 +251,7 @@ async function putShard(name, obj) {
 async function main() {
   const args = process.argv.slice(2), dirI = args.indexOf('--dir'), dir = dirI >= 0 ? args[dirI + 1] : '', onlyI = args.indexOf('--only');
   const day = args.find((a) => /^\d{8}$/.test(a)) || new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' }).replace(/-/g, '');
-  const up = args.includes('--upload'), final = args.includes('--final'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
+  const up = args.includes('--upload'), final = args.includes('--final') || args.includes('--redo'), redo = args.includes('--redo'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
   let chPos = null;
   const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0;
@@ -282,7 +282,7 @@ async function main() {
       for (let sh = 0; sh < TRN_N[cc]; sh++) {
         const name = cc + '/' + sh;
         const shard = up ? (await readShard(name)) || { v: 1, cc, days: [], t: {} } : { v: 1, cc, days: [], t: {} };
-        const changed = list ? merge(shard, by.get(sh) || [], day, final) : false;
+        const changed = list ? merge(shard, by.get(sh) || [], day, final, redo) : false;
         for (const [k, t] of Object.entries(shard.t)) {
           if (changed) t.nm = t.ids.map((id, j) => names.get(id) || t.nm[j] || id);
           { // treni della settimana (almeno 5 corse negli ultimi 7 giorni) e ritardo medio di ogni treno negli ultimi 28 giorni (almeno 3 corse) per «batte il …%»
