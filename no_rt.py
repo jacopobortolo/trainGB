@@ -14,7 +14,7 @@ import requests
 
 SITE = os.environ.get('SITE', 'https://railpulse.ch')
 HDR = {'ET-Client-Name': 'railpulse-railpulse', 'Accept-Encoding': 'gzip', 'User-Agent': 'RailPulse/1.0 (+https://railpulse.ch)'}
-OPS = ['VYG', 'GOA', 'FLT', 'BNR']
+OPS = ['VYG', 'GOA', 'FLT', 'BNR', 'SJN']   # SJ Nord: dal 25.11.2026 il feed BNR è vuoto e i treni del nord stanno in SJN (prima il contrario)
 
 
 def tag(x, t):
