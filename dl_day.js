@@ -175,7 +175,7 @@ function toHour(day, now = Date.now()) {
 const usable = (s) => !(s[0] >= 50 && s[1] + s[2] < 0.15 * s[0]);   // [corse, con ritardo, soppresse, …]
 async function get(url, auth) {
   const r = await fetch(url, { headers: { 'User-Agent': 'railpulse-tools', ...(auth ? { Authorization: 'Bearer ' + KEY } : {}) } });
-  if (!r.ok) throw new Error(url + ' → HTTP ' + r.status);
+  if (!r.ok) { const e = new Error(url + ' → HTTP ' + r.status); e.status = r.status; throw e; }
   return r;
 }
 async function main() {
@@ -201,13 +201,18 @@ async function main() {
   if (!KEY) throw new Error('manca SOCIAL_CRON_KEY');
   if (Object.keys(res).length < 10 || tot[1] < 5000) throw new Error('troppo pochi dati, non carico');
   let all = { v: 1, days: {}, top: {} };
-  try { const j = await (await get(SITE + '/api/live/tt/dlday?x=' + Date.now())).json(); if (j && j.days) all = j; } catch (e) { /* primo giorno */ }
-  all.days[day] = res; all.top[day] = top.slice(0, 30); all.upd = Date.now();
+  // solo «non trovato» vuol dire primo giorno: con qualunque altro errore ci si ferma, altrimenti un errore di rete cancellerebbe i 120 giorni salvati
+  try { const j = await (await get(SITE + '/api/live/tt/dlday?x=' + Date.now())).json(); if (j && j.days) all = j; else throw new Error('dlday senza giorni'); }
+  catch (e) { if (e.status !== 404) throw new Error('riepilogo salvato non leggibile (' + e.message + '): non carico'); }
+  // un paese saltato in questo passaggio (errore passeggero) tiene i numeri del passaggio prima
+  const was = all.days[day] || {}, keep = (all.top[day] || []).filter((t) => !(t[0] in res) && was[t[0]]);
+  all.days[day] = Object.assign({}, was, res); all.top[day] = top.concat(keep).sort((a, b) => b[3] - a[3]).slice(0, 30); all.upd = Date.now();
   all.prov = (all.prov || []).filter((d) => d !== day && all.days[d]); if (!args.includes('--final')) all.prov.push(day);   // giorni ancora provvisori (manca il passaggio di mezzogiorno)
   const ks = Object.keys(all.days).sort(); for (const k of ks.slice(0, Math.max(0, ks.length - KEEP_DAYS))) { delete all.days[k]; delete all.top[k]; }
   const body = require('zlib').gzipSync(JSON.stringify(all));
   const r = await fetch(SITE + '/api/live/tt/dlday', { method: 'PUT', body, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
   console.log('caricato:', r.status, await r.text());
+  if (!r.ok) throw new Error('caricamento fallito');
 }
 module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
