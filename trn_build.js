@@ -71,7 +71,10 @@ function trainsDay(cc, rows, reg, pos) {
     for (let i = 4; i + 2 < r.length; i += 3) { ids.push(trnSid(r[i])); tm.push(trnHm(cc, (r[3] + (i === 4 ? r[i + 2] : r[i + 1])) * 1000)); }
     const o = ids[0], d = ids[ids.length - 1];
     let n = String(r[2] || ''); const jn = numOf(cc, r, reg); if (jn && trnNum(n) !== jn) n += ' ' + jn;   // «RE17 10429»: si cerca per numero
-    out.push({ k: trnKey(o, tm[0], d), sh: trnShard(cc, o, d), n, ids, tm, f: fin.c ? -999 : fin.d, c: fin.c, dl: fin.c ? null : perStop(cc, r, reg, pos) });
+    // all'ultima fermata vale il ritardo all'arrivo (anche i dati comunicati subito dopo l'arrivo, come in dl_day.js): prima l'ultima fermata mostrava
+    // l'ultima previsione prima del passaggio (REG 12590 del 23.11: +15 a Roma Termini, arrivo +13)
+    const dl = fin.c ? null : perStop(cc, r, reg, pos); if (dl && fin.d != null) dl[dl.length - 1] = fin.d;
+    out.push({ k: trnKey(o, tm[0], d), sh: trnShard(cc, o, d), n, ids, tm, f: fin.c ? -999 : fin.d, c: fin.c, dl });
   }
   return out;
 }
