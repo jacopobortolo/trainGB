@@ -34,41 +34,8 @@ function trnBucket(n) { return n == null ? '' : String(n % 100).padStart(2, '0')
 /*/TRN*/
 const dayNum = (d) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)) / 86400000;
 
-// ritardo (minuti) a ogni fermata di una corsa del formato comune; null dove non c'è ancora nessun dato
-function perStop(cc, r, reg, pos) {
-  const dl = perStopReg(cc, r, reg, pos);
-  if (cc === 'uk' && reg.ukat) {   // Gran Bretagna: orario reale dell'istantanea Darwin, altrimenti il registro, altrimenti la previsione dell'istantanea (tools/uk_at.py)
-    const u = D.ukStops(r, reg); if (!u) return dl;
-    return u.map((x, j) => (x && x[1] ? x[0] : dl && dl[j] != null ? dl[j] : x ? x[0] : null));
-  }
-  if (cc !== 'no' || !reg.noq) return dl;
-  // Norvegia: dove il registro ha l'orario reale di una fermata (tools/no_rt.py) vale quello, altrove l'ultimo ritardo visto prima del passaggio
-  const m = D.noStops(r, reg); if (!m) return dl;
-  const out = dl || new Array(Math.floor((r.length - 4) / 3)).fill(null);
-  for (let j = 0; j < out.length; j++) { const v = m.get(r[4 + 3 * j]); if (v != null) out[j] = v; }
-  return out;
-}
-function perStopReg(cc, r, reg, pos) {
-  if (reg.exact) { const x = D.exactOf(r, reg.exact); if (x && x.dl) return x.dl; }   // Finlandia, Svezia: orario reale di ogni stazione dalla fonte (tools/dl_day.js)
-  const n = Math.floor((r.length - 4) / 3), dep0 = (r[3] + r[6]) * 1000;
-  for (const k of D.keysOf(cc, r)) {
-    const ev = reg.get(k); if (!ev) continue;
-    const dl = new Array(n).fill(null); let cur = null, e = 0, seen = false;
-    for (let j = 0; j < n; j++) {
-      const i = 4 + 3 * j, sched = (r[3] + (j === 0 ? r[i + 2] : r[i + 1])) * 1000;
-      const lim = sched + Math.max(0, cur || 0) * 60000 + 120000;   // passaggio previsto (con il ritardo noto) + 2 minuti
-      while (e < ev.length && ev[e][0] <= lim) {
-        const [t, v] = ev[e++];
-        if (t < dep0 - 3600000 || !v) continue;
-        seen = true; if (v[1] === 'C') continue;
-        const m = D.delayOf(cc, r, v, t, pos); if (m != null) cur = m;
-      }
-      dl[j] = cur;
-    }
-    if (seen) return dl;
-  }
-  return null;
-}
+// ritardo (minuti) a ogni fermata: in tools/dl_day.js (perStop), perché serve anche al prestito dal paese vicino
+const perStop = D.perStop;
 // Germania: l'orario di gtfs.de ha solo la linea («RE17»); il numero del treno arriva da DB OpenBoards (tools/de_rt.py) come terzo campo del valore nel registro
 function numOf(cc, r, reg) {
   if (cc === 'no') { const m = /^no:(VYG|GOA|SJN):ServiceJourney:(\d+)[-_]/.exec(String(r[0])); return m ? +m[2] : null; }   // Norvegia: il nome è la linea («F4»), il numero sta nel codice → «F4 601» (dal 25.11.2026)
@@ -77,19 +44,21 @@ function numOf(cc, r, reg) {
   return null;
 }
 // tutti i treni di un giorno, formato comune: [{ k, sh, n, ids, tm, f, c, dl }]
-function trainsDay(cc, rows, reg, pos) {
+function trainsDay(cc, rows, reg, pos, bor) {
   const out = [];
   if (cc === 'uk') D.joinUk(rows, reg);   // bacheche + istantanea oraria, in ordine di tempo (tools/dl_day.js)
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
-    const fin = D.finalOf(cc, r, reg, pos); if (fin.d == null && !fin.c) continue;   // nessun dato: non entra
+    let fin = D.finalOf(cc, r, reg, pos), bdl = null;
+    if (fin.d == null && !fin.c && bor) { const b = bor(cc, r); if (b) { fin = { d: b.d, c: false }; bdl = b.dl; } }   // treno di confine senza dato: ritardo a ogni fermata dalla copia nel paese vicino (tools/dl_day.js)
+    if (fin.d == null && !fin.c) continue;   // nessun dato: non entra
     const ids = [], tm = [];
     for (let i = 4; i + 2 < r.length; i += 3) { ids.push(trnSid(r[i])); tm.push(trnHm(cc, (r[3] + (i === 4 ? r[i + 2] : r[i + 1])) * 1000)); }
     const o = ids[0], d = ids[ids.length - 1];
     let n = String(r[2] || ''); const jn = numOf(cc, r, reg); if (jn && trnNum(n) !== jn) n += ' ' + jn;   // «RE17 10429»: si cerca per numero
     // all'ultima fermata vale il ritardo all'arrivo (anche i dati comunicati subito dopo l'arrivo, come in dl_day.js): prima l'ultima fermata mostrava
     // l'ultima previsione prima del passaggio (REG 12590 del 23.11: +15 a Roma Termini, arrivo +13)
-    const dl = fin.c ? null : perStop(cc, r, reg, pos); if (dl && fin.d != null) dl[dl.length - 1] = fin.d;
+    const dl = fin.c ? null : bdl || perStop(cc, r, reg, pos); if (dl && fin.d != null) dl[dl.length - 1] = fin.d;
     out.push({ k: trnKey(o, tm[0], d), sh: trnShard(cc, o, d), n, ids, tm, f: fin.c ? -999 : fin.d, c: fin.c, dl });
   }
   return out;
@@ -276,13 +245,14 @@ async function main() {
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
   let chPos = null;
   const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0, shardErr = 0;
+  const DAY = await D.dayData(only, day, dir, false);   // prima tutto in memoria: servono le copie dei treni di confine negli altri paesi
   for (const cc of only) {
     let list = null, names = new Map(), rows = 0;
     try {
-      const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
-      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + D.toHour(day), true)).text();
-      list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, D.realRows(cc, tt.t), await D.regOf(cc, text, day, dir), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
-      rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : D.realRows(cc, tt.t).length;
+      const q = DAY.S[cc]; if (q.err) throw q.err;
+      const tt = q.tt;
+      list = cc === 'ch' ? trainsCh(tt, q.text, day) : trainsDay(cc, q.rows, q.reg, cc === 'gr' || cc === 'ee' ? q.pos : null, DAY.bor);
+      rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : q.rows.length;
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
       if (!D.usable([rows, list.length, 0])) { console.log(cc, 'escluso: solo', list.length, 'treni con un dato su', rows); list = null; }
       names = cc === 'ch' ? new Map((tt.stops || []).map((s) => [String(s[0]), s[1]])) : await namesOf(cc).catch(() => new Map());
