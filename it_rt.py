@@ -32,11 +32,12 @@ def rows_of(day):
 
 def main():
     now = dt.datetime.now(TZ)
-    by_dest, nums = {}, set()
+    by_dest, nums, deps = {}, set(), {}
     for o in (0, -1):
         for r in rows_of((now + dt.timedelta(days=o)).strftime('%Y%m%d')):
             by_dest.setdefault((r[3] // 60, norm(r[1])), []).append(r[0])
             nums.add(r[0])
+            deps.setdefault(r[0], []).append(r[3] + r[6])   # partenza dal capolinea (s dal 1970), per controllare le corse di Italo
     print('righe d orario:', len(by_dest))
     if os.environ.get('SIRI_FILE'):
         src = open(os.environ['SIRI_FILE'], 'rb')
@@ -104,7 +105,7 @@ def main():
             delay = None
         d[code] = [delay, None, None, 'R']
     try:
-        n_it, h_it = italo(d, nums)
+        n_it, h_it = italo(d, nums, deps)
         print('Italo: corse nel feed', n_it, 'abbinate', h_it)
     except Exception as e:   # Italo non risponde: restano i ritardi di Trenitalia
         print('Italo: errore', e)
@@ -120,22 +121,38 @@ def main():
         print('(non caricato: manca SOCIAL_CRON_KEY)')
 
 
-def italo(d, nums):
-    """Ritardi di Italo dal GTFS-Realtime di BusOne → d[«itx:<numero>»]. Ritorna (corse nel feed, abbinate)."""
+def italo(d, nums, deps=None):
+    """Ritardi di Italo dal GTFS-Realtime di BusOne → d[«itx:<numero>»]. Ritorna (corse nel feed, abbinate).
+    Dal 25.11.2026 tre controlli, dopo i +325 dell'Italo 8997 e +320 del 9961 (Milano 19:35/19:40) del 23 e 24.11, mentre i ritardi veri erano
+    +10/+11 e 0/+13 (TracciaTreno, dati ViaggiaTreno): (1) la corsa del feed deve partire dal capolinea entro 5 minuti da una corsa del nostro
+    orario con quel numero (start_date + start_time, ora di Roma); (2) se più corse del feed portano lo stesso numero vale quella con il trip_id
+    del treno solo («NTV-8997», «NTV-8997-live-…»), non gli itinerari con cambio («NTV-8997-8966»); (3) oltre 180 minuti il ritardo di Italo si
+    scarta. Le corse scartate e i ritardi da 90 minuti in su sono stampati nel log del lavoro, per capire la causa."""
     r = requests.get('https://proxy.busone.app/italo/gtfs-rt/trip-updates.json', timeout=60, headers=BUSONE)
     r.raise_for_status()
-    now, n, hit = dt.datetime.now().timestamp(), 0, 0
+    now, n, hit, best = dt.datetime.now().timestamp(), 0, 0, {}
     for e in r.json().get('entity', []):
         tu = e.get('trip_update') or {}
         n += 1
-        v = tu.get('vehicle') or {}
-        m = re.search(r'(\d{3,5})\s*$', v.get('label') or '') or re.search(r'(\d{3,5})$', v.get('id') or '') or re.search(r'NTV-(\d{3,5})-', (tu.get('trip') or {}).get('trip_id') or '')
+        v, tr = tu.get('vehicle') or {}, tu.get('trip') or {}
+        tid = tr.get('trip_id') or ''
+        m = re.search(r'(\d{3,5})\s*$', v.get('label') or '') or re.search(r'(\d{3,5})$', v.get('id') or '') or re.search(r'NTV-(\d{3,5})-', tid)
         code = 'itx:' + m.group(1) if m else None
         if not code or code not in nums:
             continue
+        single = bool(re.match(r'^NTV-\d{3,5}(-live-[0-9a-f]+)?$', tid))
+        st, sd = tr.get('start_time') or '', tr.get('start_date') or ''
+        if deps is not None and re.match(r'^\d{1,2}:\d{2}:\d{2}$', st) and re.match(r'^\d{8}$', sd):
+            h, mi, se = (int(x) for x in st.split(':'))
+            t0 = dt.datetime(int(sd[:4]), int(sd[4:6]), int(sd[6:]), tzinfo=TZ) + dt.timedelta(hours=h, minutes=mi, seconds=se)
+            if not any(abs(t0.timestamp() - x) <= 300 for x in deps.get(code, [])):
+                print('Italo: scartata', code, tid, sd, st, '(nessuna corsa nostra a quell ora)')
+                continue
+        if code in best and best[code] and not single:
+            continue   # c'è già la corsa del treno solo
         hit += 1
-        if (tu.get('trip') or {}).get('schedule_relationship') in ('CANCELED', 'CANCELLED', 3):
-            d[code] = [None, None, None, 'C']
+        if tr.get('schedule_relationship') in ('CANCELED', 'CANCELLED', 3):
+            d[code] = [None, None, None, 'C']; best[code] = single
             continue
         delay = None
         for s in tu.get('stop_time_update') or []:   # prossima fermata: la prima con l'ora prevista non ancora passata; altrimenti l'ultima
@@ -145,10 +162,13 @@ def italo(d, nums):
             delay = round(ev['delay'] / 60)
             if (ev.get('time') or 0) >= now:
                 break
-        if delay is not None and -60 <= delay <= 360:
-            d[code] = [delay, None, None, 'R']
+        if delay is not None and delay >= 90:
+            print('Italo: ritardo grande', code, tid, sd, st, delay, json.dumps((tu.get('stop_time_update') or [])[:3])[:400])
+        if delay is not None and -60 <= delay <= 180:
+            d[code] = [delay, None, None, 'R']; best[code] = single
+        elif code in d and not best.get(code):
+            del d[code]
     return n, hit
-
 
 if __name__ == '__main__':
     main()
