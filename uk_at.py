@@ -8,7 +8,9 @@ uniscono (vale l'ultima che ha visto la fermata).
 
   python uk_at.py AAAAMMGG [--out exact-uk.json] [--hours AAAAMMGGHH,AAAAMMGGHH…] [--diag]
 
-Risultato (--out): {"day", "hours": [ore lette], "t": {rid: [[minuti del giorno dell'orario pubblico, minuti di ritardo, 1 = arrivo | 0 = partenza], …]}}
+Un treno arrivato esce dall'istantanea entro un'ora: servono tutte le istantanee del giorno, e per le ultime fermate di un treno arrivato
+tra due istantanee vale l'ultima previsione (et) fatta al massimo un'ora prima.
+Risultato (--out): {"day", "hours": [ore lette], "t": {rid: [[minuti del giorno dell'orario pubblico, minuti di ritardo, 1 = arrivo | 0 = partenza, 1 = reale | 0 = previsto], …]}}
 solo per i rid del giorno (cominciano con AAAAMMGG). --diag stampa per ogni istantanea quanti treni contiene e da quante ore sono arrivati
 quelli già arrivati (per sapere ogni quante ore serve un'istantanea). Gira nel repository PUBBLICO jacopobortolo/trainGB (workflow dl-day.yml):
 questa è la copia di riferimento. Serve: pip install requests"""
@@ -55,7 +57,7 @@ def fetch(hour):
 
 
 def extract(raw, day=''):
-    """XML di un'istantanea → {rid: [[minuti dell'orario pubblico, ritardo, 1 arrivo | 0 partenza], …]}, e i rid arrivati al capolinea"""
+    """XML di un'istantanea → {rid: [[minuti dell'orario pubblico, ritardo, 1 arrivo | 0 partenza, 1 reale | 0 previsto], …]} dei treni già partiti, e i rid arrivati al capolinea"""
     out, done = {}, set()
     for rid, body in TS.findall(raw):
         if day and not rid.startswith(day):
@@ -69,13 +71,14 @@ def extract(raw, day=''):
             last = False
             for kind, ev in EV.findall(inner):
                 e = dict(ATTR.findall(ev))
-                if not plan.get(kind) or not e.get('at'):
+                t = e.get('at') or e.get('et')
+                if not plan.get(kind) or not t or not re.match(r'\d\d:\d\d', t):
                     continue
-                d = diff(e['at'], plan[kind])
+                d = diff(t, plan[kind])
                 if -60 <= d <= 600:
-                    st.append([mins(plan[kind]), d, 1 if kind == 'arr' else 0])
-                    last = kind == 'arr'
-        if st:
+                    st.append([mins(plan[kind]), d, 1 if kind == 'arr' else 0, 1 if e.get('at') else 0])
+                    last = kind == 'arr' and bool(e.get('at'))
+        if any(x[3] for x in st):               # almeno una fermata già fatta: il treno è partito
             out[rid] = st
             if last:
                 done.add(rid)
@@ -83,10 +86,10 @@ def extract(raw, day=''):
 
 
 def hours_for(day):
-    """istantanee da leggere per un giorno d'esercizio: ogni 3 ore dalle 03 UTC del giorno alle 06 del giorno dopo, fino all'ultima già pronta"""
+    """istantanee da leggere per un giorno d'esercizio: tutte, dalle 01 UTC del giorno alle 06 del giorno dopo (un treno arrivato esce dall'istantanea entro un'ora), fino all'ultima già pronta"""
     d0 = datetime.strptime(day, '%Y%m%d').replace(tzinfo=timezone.utc)
     lim = datetime.now(timezone.utc) - timedelta(minutes=70)
-    hs = [d0 + timedelta(hours=h) for h in range(3, 31, 3)]
+    hs = [d0 + timedelta(hours=h) for h in range(1, 31)]
     hs = [h for h in hs if h <= lim]
     if lim < d0 + timedelta(hours=30) and (not hs or lim - hs[-1] > timedelta(hours=1)):
         hs.append(lim)                          # passaggio di notte: anche l'ultima istantanea pronta
@@ -116,27 +119,34 @@ def main():
             for rid in done:
                 p, d, _ = got[rid][-1]
                 days = (datetime.strptime(snap[:8], '%Y%m%d') - datetime.strptime(rid[:8], '%Y%m%d')).days
-                a = (now + days * 1440 - (p + d)) // 60
-                if a < -2:
-                    a += 24                                     # arrivo dopo mezzanotte di un treno del giorno prima
+                a = (now + days * 1440 - (p + d)) // 10 * 10       # minuti dall'arrivo, a decine
+                if a < -120:
+                    a += 1440                                   # arrivo dopo mezzanotte di un treno del giorno prima
                 age[a] = age.get(a, 0) + 1
             print(h, 'istantanea', snap, len(blob) // 1000, 'kB; treni per giorno', sorted(ssd.items()), '; con orari reali', len(got), '; arrivati', len(done))
-            print('   ore dall\'arrivo → treni:', sorted(age.items()))
+            print('   minuti dall\'arrivo → treni:', sorted(age.items()))
             ex = next((r for r in done if len(got[r]) > 10), None)
             if ex:
                 print('   esempio', ex, got[ex][:14])
             got = {r: v for r, v in got.items() if r.startswith(day)}
-        for rid, st in got.items():
-            if len(st) >= len(allt.get(rid, [])):
-                allt[rid] = st                  # l'istantanea più recente ha visto più fermate
+        for rid, st in got.items():             # unione: l'orario reale vince sempre, tra due previsioni vale la più recente
+            cur = allt.setdefault(rid, {})
+            for m, d, k, real in st:
+                if real or not cur.get((m, k), (0, 0))[1]:
+                    cur[(m, k)] = (d, real)
         print(h, len(got), 'treni del giorno con orari reali; in tutto', len(allt))
     if not read:
         sys.exit('nessuna istantanea letta')
+    # l'ordine delle fermate è quello della prima istantanea che ha visto il treno (ogni istantanea elenca tutte le fermate, fatte e da fare)
+    t = {rid: [[m, d, k, real] for (m, k), (d, real) in c.items()] for rid, c in allt.items()}
+    n = sum(len(v) for v in t.values())
+    fin = [v[-1] for v in t.values() if v[-1][2] == 1]
+    print(len(read), 'istantanee;', len(t), 'treni;', n, 'orari, di cui reali', sum(x[3] for v in t.values() for x in v), '; ultima fermata: reale', sum(x[3] for x in fin), 'prevista', sum(1 - x[3] for x in fin))
     out = opt('--out')
     if out:
         with open(out, 'w', encoding='utf-8') as f:
-            json.dump({'day': day, 'hours': read, 't': allt}, f, separators=(',', ':'))
-        print('scritto', out, os.path.getsize(out) // 1000, 'kB,', len(allt), 'treni,', sum(len(v) for v in allt.values()), 'orari reali')
+            json.dump({'day': day, 'hours': read, 't': t}, f, separators=(',', ':'))
+        print('scritto', out, os.path.getsize(out) // 1000, 'kB')
 
 
 if __name__ == '__main__':
