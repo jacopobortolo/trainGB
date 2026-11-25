@@ -292,7 +292,41 @@ function matchPairs(rows, pos) {
 }
 // tutto il giorno in memoria: per ogni paese orario, registro e posizioni delle stazioni; poi le coppie di confine.
 // → { S: { cc: { tt, text, rows, reg, pos, err } }, bor(cc, riga) → { d: ritardo all'ultima fermata, dl: per fermata, from: paese vicino } | null }
-const XB_NO = { ch: 1, uk: 1, ie: 1 };   // fuori dal prestito: orario in un altro formato (Svizzera) o nessun confine con una copia
+// Svizzera come FONTE del prestito (dal 25.11.2026 sera): i treni svizzeri verso Italia, Germania, Austria e Francia danno il loro ritardo alla copia nell'orario
+// del paese vicino (gli EC Milano–Zurigo, che il feed italiano non ha). Il contrario non serve: il feed svizzero copre già i suoi treni.
+// Orario ?c=2 → righe del formato comune: codice «ch:<trip_id>», stazione = numero UIC, e r.seq = stop_sequence di ogni fermata (i ritardi svizzeri sono per sequenza).
+function chMid(day) { const utc = Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6, 8)); return (utc - +new Date(utc).toLocaleString('en-GB', { timeZone: 'Europe/Zurich', hour: '2-digit', hour12: false }) * 3600000) / 1000; }
+function chRows(tt, day) {
+  const S = tt.stops || [], mid = chMid(day), rows = [], pos = new Map();
+  for (const s of S) if (s && s[2] != null) pos.set(String(s[0]), [+s[2], +s[3]]);
+  for (const t of tt.trips || []) {
+    if (t[1] === 'BAT') continue;
+    const f = t[4] || []; if (f.length < 8) continue;
+    const t0 = mid + f[2], r = ['ch:' + t[3], String(t[2] || ''), String(t[0] || t[1] || ''), t0], seq = [];
+    for (let i = 0; i + 3 < f.length; i += 4) { const s = S[f[i]]; r.push(String(s ? s[0] : f[i]), mid + f[i + 1] - t0, mid + f[i + 2] - t0); seq.push(f[i + 3]); }
+    r[5] = 0; Object.defineProperty(r, 'seq', { value: seq });
+    rows.push(r);
+  }
+  return { rows, pos };
+}
+// registro degli arrivi (rta:) → ultimo stato di ogni corsa del giorno: Map trip_id → [chiave, ora, soppressa, [[sequenza, ritardo s]]]
+function chLast(text, day) {
+  const last = new Map();
+  for (const l of String(text || '').split('\n')) {
+    if (!l || l[0] !== '[') continue;
+    let x; try { x = JSON.parse(l); } catch (e) { continue; }
+    const k = String(x[0]), b = k.lastIndexOf('|'); if (b < 0 || k.slice(b + 1) !== day) continue;
+    const id = k.slice(0, b), o = last.get(id); if (!o || x[1] >= o[1]) last.set(id, x);
+  }
+  return last;
+}
+function chStops(r, last) {
+  const x = last && last.get(String(r[0]).slice(3)); if (!x || x[2] || !r.seq) return null;
+  const bySeq = new Map((x[3] || []).map((q) => [q[0], Math.round(q[1] / 60)])), dl = []; let cur = null;
+  for (const q of r.seq) { if (bySeq.has(q)) cur = bySeq.get(q); dl.push(cur != null && cur >= -60 && cur <= 600 ? cur : null); }
+  return dl;
+}
+const XB_NO = { uk: 1, ie: 1 };   // fuori dal prestito: nessun confine con una copia. La Svizzera entra solo come fonte (chi la riceve è il paese vicino)
 async function dayData(ccs, day, dir, noreg) {
   const S = {};
   for (const cc of ccs) {
@@ -301,16 +335,17 @@ async function dayData(ccs, day, dir, noreg) {
       s.tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       s.text = noreg ? '' : dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
       if (cc !== 'ch') { s.rows = realRows(cc, s.tt.t); s.reg = await regOf(cc, s.text, day, dir); try { s.pos = await stationsOf(cc); } catch (e) { s.pos = null; } }
+      else { const c = chRows(s.tt, day); s.rows = c.rows; s.pos = c.pos; s.last = chLast(s.text, day); }
     } catch (e) { s.err = e; }
   }
   const rows = {}, pos = {};
   for (const cc of ccs) if (!XB_NO[cc] && S[cc].rows && S[cc].pos) { rows[cc] = S[cc].rows; pos[cc] = S[cc].pos; }
   const pairs = Object.keys(rows).length > 1 ? matchPairs(rows, pos) : new Map();
   const bor = (cc, r) => {
-    const list = pairs.get(r), pa = S[cc] && S[cc].pos; if (!list || !pa) return null;
+    const list = pairs.get(r), pa = S[cc] && S[cc].pos; if (!list || !pa || cc === 'ch') return null;
     for (const o of list) {
-      const s2 = S[o.cc]; if (!s2 || !s2.reg || !s2.pos) continue;
-      const dlB = perStop(o.cc, o.r, s2.reg, GPS[o.cc] ? s2.pos : null); if (!dlB || dlB.every((v) => v == null)) continue;
+      const s2 = S[o.cc]; if (!s2 || !s2.pos || (o.cc === 'ch' ? !s2.last : !s2.reg)) continue;
+      const dlB = o.cc === 'ch' ? chStops(o.r, s2.last) : perStop(o.cc, o.r, s2.reg, GPS[o.cc] ? s2.pos : null); if (!dlB || dlB.every((v) => v == null)) continue;
       const m = new Map();   // «cella|minuto» della copia → ritardo lì
       for (let i = 4, j = 0; i + 2 < o.r.length; i += 3, j++) { const p = s2.pos.get(xbSid(o.r[i])); if (!p || dlB[j] == null) continue; const c = xbCell(p); m.set(c + '|' + Math.floor((o.r[3] + o.r[i + 1]) / 60), dlB[j]); m.set(c + '|' + Math.floor((o.r[3] + o.r[i + 2]) / 60), dlB[j]); }
       const n = Math.floor((r.length - 4) / 3), dl = new Array(n).fill(null); let cur = null;
@@ -441,5 +476,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dayData, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dayData, chRows, chLast, chStops, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
