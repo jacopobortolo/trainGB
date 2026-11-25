@@ -51,7 +51,7 @@ function keysOf(cc, r) {
   k.push(code);
   if (cc === 'at') k.push('#' + code.split(':').pop());   // Scotty: sigla e numero del treno («#REX2679», worker/at.js)
   if (cc === 'ro') { const n = (String(r[2]).match(/(\d+)\s*$/) || [])[1]; if (n) k.push('n:' + n.replace(/^0+/, '')); }
-  if (cc === 'fr') { const n = code.startsWith('idf:') ? code.slice(4) : (/^OCESN(\d+)/.exec(code) || [])[1]; if (n) k.push('s:' + n + '@' + Math.floor(dep0 / 60)); }
+  if (cc === 'fr') { const n = code.startsWith('idf:') ? code.slice(4) : (/^OCE[A-Z]*?(\d+)/.exec(code) || [])[1]; /* anche OCESA/OCEEA/OCELO (TER, dal 25.11.2026) */ if (n) k.push('s:' + n + '@' + Math.floor(dep0 / 60)); }
   return k;
 }
 // Grecia, Estonia: ritardo stimato dalla posizione (la stessa regola di gpsDelay in tools/country_data_template.js); pos = id fermata → [lat, lon]
