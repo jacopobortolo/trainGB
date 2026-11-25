@@ -12,6 +12,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: pip install -q requests && python uk_at.py ${{ inputs.day }} --diag ${{ inputs.hours != '' && '--hours' || '' }} ${{ inputs.hours }}
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: pip install -q requests && python uk_at.py ${{ inputs.day }} --diag --out exact-uk.json ${{ inputs.hours != '' && '--hours' || '' }} ${{ inputs.hours }}
         env:
           RDM_KEY_SNAP: ${{ secrets.RDM_KEY_SNAP }}
+      # how many trains of the day's timetable get a real arrival time from the snapshots alone (no delay log, nothing uploaded)
+      - run: node dl_day.js ${{ inputs.day }} --only uk --noreg
