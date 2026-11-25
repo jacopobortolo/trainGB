@@ -89,7 +89,7 @@ function delayOf(cc, r, v, t, pos) {
 // annunci del giorno di Trafikverket via /api/se/day?rt=1), quindi il ritardo a ogni fermata si legge da lì, esatto, e non dal registro (un valore
 // ogni ~7 minuti). Il registro resta la riserva per i treni senza orario reale all'ultima fermata (ancora in viaggio nel passaggio di notte) o se la fonte non risponde.
 // → Map numero del treno → { c: soppresso, a / d: Map «stazione|secondi programmati» → minuti di ritardo all'arrivo / alla partenza }
-const SRC = { fi: 1, se: 1, no: 1 };
+const SRC = { fi: 1, se: 1, no: 1, uk: 1 };
 const minOf = (act, sch) => { const m = Math.round((Date.parse(act) - Date.parse(sch)) / 60000); return m >= -60 && m <= 600 ? m : null; };
 function exactPut(m, k, canc, arr, st, sch, act) {
   const e = m.get(k) || m.set(k, { c: true, n: 0, a: new Map(), d: new Map() }).get(k);
@@ -147,15 +147,59 @@ function noStops(r, reg) {
   for (const k of keysOf('no', r)) for (const [, v] of reg.get(k) || []) if (v && Array.isArray(v[3])) for (const c of v[3]) { const st = reg.noq.get(String(c[0])); if (st && typeof c[1] === 'number' && c[1] >= -60 && c[1] <= 600) m.set(st, c[1]); }
   return m.size ? m : null;
 }
+// Gran Bretagna (dal 25.11.2026): orari reali a ogni fermata dalle istantanee orarie Darwin di tutto il giorno, uniti da tools/uk_at.py nel file
+// exact-uk.json ({ day, t: { rid: [[minuti del giorno dell'orario pubblico (Londra), ritardo, 1 arrivo | 0 partenza, 1 reale | 0 previsto]] } }).
+// Un treno arrivato esce dall'istantanea entro mezz'ora: le fermate fatte dopo l'ultima istantanea che l'ha visto hanno solo la previsione. Quindi per
+// ogni fermata: orario reale se c'è, altrimenti il registro (bacheche delle 60 stazioni, più fresche), altrimenti la previsione dell'istantanea.
+const lonFmt = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const lonMin = (sec) => { const p = lonFmt.format(sec * 1000).split(':'); return +p[0] * 60 + +p[1]; };
+function exactUk(j) {
+  const m = new Map();
+  for (const rid in (j && j.t) || {}) {
+    // ad: minuto di PARTENZA → ritardo all'ARRIVO nella stessa fermata (l'orario del giorno ha la sola partenza per le fermate intermedie)
+    const e = { a: new Map(), d: new Map(), ad: new Map() }; let p = null;
+    for (const x of j.t[rid]) { (x[2] ? e.a : e.d).set(x[0], [x[1], x[3]]); if (!x[2] && p && p[2] && x[0] - p[0] >= 0 && x[0] - p[0] <= 30) e.ad.set(x[0], [p[1], p[3]]); p = x; }
+    m.set(rid, e);
+  }
+  return m;
+}
+// una corsa → per ogni fermata [minuti di ritardo, 1 reale | 0 previsto] o null; null se il treno non è nel file
+function ukStops(r, reg) {
+  const e = reg.ukat && reg.ukat.get(String(r[0]).replace(/^uk:/, '')); if (!e) return null;
+  const n = Math.floor((r.length - 4) / 3), out = new Array(n).fill(null);
+  for (let j = 0; j < n; j++) {
+    const i = 4 + 3 * j, t = lonMin(r[3] + r[i + 1]), a = e.a.get(t) || e.ad.get(t), d = e.d.get(lonMin(r[3] + r[i + 2]));
+    out[j] = (j === 0 ? d || a : a || d) || null;
+  }
+  return out;
+}
 // registro + fonte diretta dove c'è: reg.exact (se la fonte non risponde resta il solo registro, e lo si scrive nel log)
 async function regOf(cc, text, day, dir) {
   const reg = parseReg(text);
   if (cc === 'no') { try { reg.noq = await noqOf(); } catch (e) { console.log('no: tabella dei marciapiedi non letta (' + e.message + ')'); } return reg; }
+  if (cc === 'uk') {
+    try {
+      const f = dir ? path.join(dir, 'exact-uk.json') : process.env.UK_AT || 'exact-uk.json';
+      if (!fs.existsSync(f)) { console.log('uk: manca', f + ': solo registro'); return reg; }
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (j.day !== day) console.log('uk: il file degli orari reali è del', j.day + ': solo registro'); else { reg.ukat = exactUk(j); console.log('uk: orari reali di', reg.ukat.size, 'treni da', (j.hours || []).length, 'istantanee'); }
+    } catch (e) { console.log('uk: orari reali non letti (' + e.message + '): solo registro'); }
+    return reg;
+  }
   if (SRC[cc]) try { const ex = await exactDay(cc, day, dir); if (ex && ex.size) reg.exact = ex; else console.log(cc, 'fonte diretta vuota: solo registro'); } catch (e) { console.log(cc, 'fonte diretta non letta (' + e.message + '): solo registro'); }
   return reg;
 }
-// una corsa: { d: ritardo all'arrivo | null, c: soppressa } (x = dalla fonte diretta)
+// una corsa: { d: ritardo all'arrivo | null, c: soppressa } (x: 1 = orario reale dalla fonte, 2 = previsione dell'istantanea britannica)
 function finalOf(cc, r, reg, pos) {
+  if (cc === 'uk' && reg.ukat) {
+    const u = ukStops(r, reg), last = u && u[u.length - 1];
+    if (last && last[1]) return { d: last[0], c: false, seen: true, x: 1 };
+    const f = finalReg(cc, r, reg, pos);
+    return f.d == null && !f.c && last ? { d: last[0], c: false, seen: true, x: 2 } : f;
+  }
+  return finalReg(cc, r, reg, pos);
+}
+function finalReg(cc, r, reg, pos) {
   if (reg.exact) { const x = exactOf(r, reg.exact); if (x) return { d: x.d, c: x.c, seen: true, x: 1 }; }
   if (cc === 'no' && reg.noq) { const m = noStops(r, reg), last = r[r.length - 3]; if (m && m.has(last)) return { d: m.get(last), c: false, seen: true, x: 1 }; }   // arrivo reale al capolinea
   const dep0 = (r[3] + r[6]) * 1000, arr = (r[3] + r[r.length - 2]) * 1000;
@@ -197,7 +241,7 @@ function summarize(cc, rows, reg, pos) {
   if (cc === 'uk') joinUk(rows, reg);
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
-    const f = finalOf(cc, r, reg, pos); if (f.x) nx++;
+    const f = finalOf(cc, r, reg, pos); if (f.x === 1) nx++;
     if (f.c) { s[2]++; continue; }
     if (f.d == null) continue;
     add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')], keyOf(cc, r));
@@ -252,23 +296,23 @@ async function get(url, auth) {
 async function main() {
   const args = process.argv.slice(2), dirI = args.indexOf('--dir'), dir = dirI >= 0 ? args[dirI + 1] : '';
   const day = args.find((a) => /^\d{8}$/.test(a)) || dateIn(Date.now() - 86400000, 'Europe/Zurich').replace(/-/g, '');
-  const res = {}, top = [];
-  for (const cc of CC) {
+  const res = {}, top = [], onlyI = args.indexOf('--only'), noreg = args.includes('--noreg');   // --only uk --noreg: prova di un paese senza il registro (non carica)
+  for (const cc of onlyI >= 0 ? args[onlyI + 1].split(',') : CC) {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
-      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
+      const text = noreg ? '' : dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
       const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, tt.t || [], await regOf(cc, text, day, dir), GPS[cc] ? await stationsOf(cc) : null);
       // meno del 15 % dei treni dell'orario con un dato = orario o feed rotti quel giorno (23.11: Spagna 6 su 3267, Irlanda e Grecia 0): il paese non entra, numeri sbagliati no
       if (!usable(x.s)) { console.log(cc, 'escluso: solo', x.s[1] + x.s[2], 'treni con un dato su', x.s[0]); continue; }
       res[cc] = x.s; top.push(...x.top);
       const pc = (n) => (x.s[1] ? Math.round((100 * n) / x.s[1]) : 0) + '%';
-      console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10], SRC[cc] ? '| dalla fonte ' + (x.nx || 0) + ', dal registro ' + (x.s[1] + x.s[2] - (x.nx || 0)) : '');
+      console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10], SRC[cc] ? '| orario reale dalla fonte ' + (x.nx || 0) + ', altri ' + (x.s[1] + x.s[2] - (x.nx || 0)) : '');
     } catch (e) { console.log(cc, 'saltato:', e.message); }
   }
   top.sort((a, b) => b[3] - a[3]);
   const tot = Object.values(res).reduce((a, s) => [a[0] + s[0], a[1] + s[1], a[2] + s[10]], [0, 0, 0]);
   console.log('totale: corse', tot[0], 'con ritardo', tot[1], 'minuti', tot[2]);
-  if (!args.includes('--upload')) return;
+  if (!args.includes('--upload') || onlyI >= 0 || noreg) return;
   if (!KEY) throw new Error('manca SOCIAL_CRON_KEY');
   if (Object.keys(res).length < 10 || tot[1] < 5000) throw new Error('troppo pochi dati, non carico');
   let all = { v: 1, days: {}, top: {} };
@@ -285,5 +329,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
