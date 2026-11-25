@@ -281,8 +281,8 @@ async function main() {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + D.toHour(day), true)).text();
-      list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, tt.t || [], await D.regOf(cc, text, day, dir), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
-      rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : (tt.t || []).length;
+      list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, D.realRows(cc, tt.t), await D.regOf(cc, text, day, dir), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
+      rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : D.realRows(cc, tt.t).length;
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
       if (!D.usable([rows, list.length, 0])) { console.log(cc, 'escluso: solo', list.length, 'treni con un dato su', rows); list = null; }
       names = cc === 'ch' ? new Map((tt.stops || []).map((s) => [String(s[0]), s[1]])) : await namesOf(cc).catch(() => new Map());
