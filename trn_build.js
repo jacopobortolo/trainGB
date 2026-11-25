@@ -37,6 +37,10 @@ const dayNum = (d) => Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8
 // ritardo (minuti) a ogni fermata di una corsa del formato comune; null dove non c'è ancora nessun dato
 function perStop(cc, r, reg, pos) {
   const dl = perStopReg(cc, r, reg, pos);
+  if (cc === 'uk' && reg.ukat) {   // Gran Bretagna: orario reale dell'istantanea Darwin, altrimenti il registro, altrimenti la previsione dell'istantanea (tools/uk_at.py)
+    const u = D.ukStops(r, reg); if (!u) return dl;
+    return u.map((x, j) => (x && x[1] ? x[0] : dl && dl[j] != null ? dl[j] : x ? x[0] : null));
+  }
   if (cc !== 'no' || !reg.noq) return dl;
   // Norvegia: dove il registro ha l'orario reale di una fermata (tools/no_rt.py) vale quello, altrove l'ultimo ritardo visto prima del passaggio
   const m = D.noStops(r, reg); if (!m) return dl;
