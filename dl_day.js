@@ -151,6 +151,13 @@ async function stationsOf(cc) {
   for (const l of body.split('\\n')) { const p = l.split('|'); if (p.length >= 4) m.set(p[0], [+p[2], +p[3]]); }
   return m;
 }
+// ultima ora del registro da leggere: adesso (ora UTC), al massimo le 23 UTC del giorno dopo. Dal 25.11.2026 il lavoro gira due volte: di notte (provvisorio, dati
+// fino a quell'ora) e a mezzogiorno con --final (anche i treni notturni arrivati in mattinata). Così ogni treno ha il suo arrivo vero, non l'ultima previsione.
+function toHour(day, now = Date.now()) {
+  const nx = new Date(Date.UTC(+day.slice(0, 4), +day.slice(4, 6) - 1, +day.slice(6, 8)) + 86400000).toISOString().slice(0, 10).replace(/-/g, '') + '23';
+  const h = new Date(now).toISOString().slice(0, 13).replace(/[-T]/g, '');
+  return h < nx ? h : nx;
+}
 const usable = (s) => !(s[0] >= 50 && s[1] + s[2] < 0.15 * s[0]);   // [corse, con ritardo, soppresse, …]
 async function get(url, auth) {
   const r = await fetch(url, { headers: { 'User-Agent': 'railpulse-tools', ...(auth ? { Authorization: 'Bearer ' + KEY } : {}) } });
@@ -164,7 +171,7 @@ async function main() {
   for (const cc of CC) {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
-      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day, true)).text();
+      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
       const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, tt.t || [], parseReg(text), GPS[cc] ? await stationsOf(cc) : null);
       // meno del 15 % dei treni dell'orario con un dato = orario o feed rotti quel giorno (23.11: Spagna 6 su 3267, Irlanda e Grecia 0): il paese non entra, numeri sbagliati no
       if (!usable(x.s)) { console.log(cc, 'escluso: solo', x.s[1] + x.s[2], 'treni con un dato su', x.s[0]); continue; }
@@ -182,10 +189,11 @@ async function main() {
   let all = { v: 1, days: {}, top: {} };
   try { const j = await (await get(SITE + '/api/live/tt/dlday?x=' + Date.now())).json(); if (j && j.days) all = j; } catch (e) { /* primo giorno */ }
   all.days[day] = res; all.top[day] = top.slice(0, 30); all.upd = Date.now();
+  all.prov = (all.prov || []).filter((d) => d !== day && all.days[d]); if (!args.includes('--final')) all.prov.push(day);   // giorni ancora provvisori (manca il passaggio di mezzogiorno)
   const ks = Object.keys(all.days).sort(); for (const k of ks.slice(0, Math.max(0, ks.length - KEEP_DAYS))) { delete all.days[k]; delete all.top[k]; }
   const body = require('zlib').gzipSync(JSON.stringify(all));
   const r = await fetch(SITE + '/api/live/tt/dlday', { method: 'PUT', body, headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
   console.log('caricato:', r.status, await r.text());
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf, usable };
+module.exports = { parseReg, keysOf, delayOf, finalOf, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
