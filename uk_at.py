@@ -117,7 +117,7 @@ def main():
             for rid in TS.findall(raw):
                 ssd[rid[0][:8]] = ssd.get(rid[0][:8], 0) + 1
             for rid in done:
-                p, d, _ = got[rid][-1]
+                p, d = got[rid][-1][:2]
                 days = (datetime.strptime(snap[:8], '%Y%m%d') - datetime.strptime(rid[:8], '%Y%m%d')).days
                 a = (now + days * 1440 - (p + d)) // 10 * 10       # minuti dall'arrivo, a decine
                 if a < -120:
