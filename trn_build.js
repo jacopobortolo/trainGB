@@ -106,12 +106,30 @@ function trainsCh(tt, text, day) {
   }
   return out;
 }
+// toglie da una fetta il contributo di un giorno (ritardo all'arrivo, medie per fermata del mese, corsa recente): serve a rifare un giorno provvisorio.
+// Il ritardo massimo per fermata del mese (m[3]) non si può togliere e resta.
+function unmerge(shard, dn, mon) {
+  for (const t of Object.values(shard.t)) {
+    if (dn >= t.d0 && dn < t.d0 + t.f.length) t.f[dn - t.d0] = null;
+    const q = (t.r || []).find((x) => x[0] === dn); if (!q) continue;
+    (q[2] || t.ids).forEach((id, j) => {
+      const v = q[1][j], m = v == null ? null : (t.a[id] || []).find((z) => z[0] === mon); if (!m) return;
+      m[1] -= v; m[2]--; if (v > 5) m[4]--;
+    });
+    t.r = t.r.filter((x) => x[0] !== dn);
+  }
+}
 // unisce i treni del giorno a una fetta dell'archivio (funzione pura: provata in tests/run.js)
-function merge(shard, list, day) {
-  const dn = dayNum(day);
-  if (shard.days.includes(dn)) return false;   // giorno già elaborato: le medie per fermata non vanno contate due volte
-  shard.days = shard.days.concat(dn).filter((x) => x > dn - KEEP).sort((a, b) => a - b);
-  const mon = +day.slice(0, 6);
+// final = passaggio di mezzogiorno (dal 25.11.2026): un giorno entrato di notte come provvisorio (shard.prov) viene tolto e rimesso con i dati completi
+function merge(shard, list, day, final = true) {
+  const dn = dayNum(day), mon = +day.slice(0, 6);
+  shard.prov = shard.prov || [];
+  if (shard.days.includes(dn)) {   // giorno già elaborato: le medie per fermata non vanno contate due volte
+    if (!final || !shard.prov.includes(dn)) return false;
+    unmerge(shard, dn, mon);
+  }
+  shard.days = shard.days.concat(dn).filter((x, i, a) => x > dn - KEEP && a.indexOf(x) === i).sort((a, b) => a - b);
+  shard.prov = shard.prov.filter((x) => x !== dn && shard.days.includes(x)); if (!final) shard.prov.push(dn);
   for (const x of list) {
     let t = shard.t[x.k];
     if (!t) t = shard.t[x.k] = { n: x.n, ids: x.ids, nm: [], tm: x.tm, d0: dn, f: [], a: {}, r: [] };
@@ -233,7 +251,7 @@ async function putShard(name, obj) {
 async function main() {
   const args = process.argv.slice(2), dirI = args.indexOf('--dir'), dir = dirI >= 0 ? args[dirI + 1] : '', onlyI = args.indexOf('--only');
   const day = args.find((a) => /^\d{8}$/.test(a)) || new Date(Date.now() - 86400000).toLocaleDateString('sv-SE', { timeZone: 'Europe/Zurich' }).replace(/-/g, '');
-  const up = args.includes('--upload'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
+  const up = args.includes('--upload'), final = args.includes('--final'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
   let chPos = null;
   const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0;
@@ -241,7 +259,7 @@ async function main() {
     let list = null, names = new Map(), rows = 0;
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
-      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day, true)).text();
+      const text = dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + D.toHour(day), true)).text();
       list = cc === 'ch' ? trainsCh(tt, text, day) : trainsDay(cc, tt.t || [], D.parseReg(text), cc === 'gr' || cc === 'ee' ? await D.stationsOf(cc) : null);
       rows = cc === 'ch' ? (tt.trips || []).filter((t) => t[1] !== 'BAT').length : (tt.t || []).length;
       // meno del 15 % dei treni con un dato = orario o feed rotti quel giorno (come in dl_day.js): quel giorno non entra
@@ -264,7 +282,7 @@ async function main() {
       for (let sh = 0; sh < TRN_N[cc]; sh++) {
         const name = cc + '/' + sh;
         const shard = up ? (await readShard(name)) || { v: 1, cc, days: [], t: {} } : { v: 1, cc, days: [], t: {} };
-        const changed = list ? merge(shard, by.get(sh) || [], day) : false;
+        const changed = list ? merge(shard, by.get(sh) || [], day, final) : false;
         for (const [k, t] of Object.entries(shard.t)) {
           if (changed) t.nm = t.ids.map((id, j) => names.get(id) || t.nm[j] || id);
           { // treni della settimana (almeno 5 corse negli ultimi 7 giorni) e ritardo medio di ogni treno negli ultimi 28 giorni (almeno 3 corse) per «batte il …%»
@@ -302,5 +320,5 @@ async function main() {
     }
   }
 }
-module.exports = { zoneFinder, pip, dayFacts, summarizeFacts, weekRuns, catOf, perStop, numOf, trainsDay, trainsCh, merge, dayNum };
+module.exports = { zoneFinder, pip, dayFacts, summarizeFacts, weekRuns, catOf, perStop, numOf, trainsDay, trainsCh, merge, unmerge, dayNum };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
