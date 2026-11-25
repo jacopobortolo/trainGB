@@ -1,0 +1,17 @@
+name: uk-at
+# Diagnosis by hand: what the hourly Darwin snapshots of a day contain (real times at every stop). The daily use is in dl-day.yml.
+# Copy of tools/uk-at.yml in the RailPulse repository: keep them identical.
+on:
+  workflow_dispatch:
+    inputs:
+      day: { description: 'day AAAAMMGG (default: yesterday)', required: false, default: '' }
+      hours: { description: 'snapshot hours AAAAMMGGHH,… UTC (default: every 3 hours)', required: false, default: '' }
+jobs:
+  at:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q requests && python uk_at.py ${{ inputs.day }} --diag ${{ inputs.hours != '' && '--hours' || '' }} ${{ inputs.hours }}
+        env:
+          RDM_KEY_SNAP: ${{ secrets.RDM_KEY_SNAP }}
