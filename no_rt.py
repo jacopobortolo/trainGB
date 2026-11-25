@@ -4,7 +4,8 @@ Legge i feed SIRI-ET di Entur (NLOD) per i gestori VYG, GOA, FLT, BNR attraverso
 vecchia se Entur risponde 429: Entur ammette poche richieste al minuto e risponde 429 anche dai server di GitHub), come la pagina /no (js/no-data.js), tiene i soli mezzi su rotaia e per ogni corsa
 (DatedVehicleJourneyRef, la stessa chiave del browser) calcola: ritardo all'ultima fermata con orario effettivo (Actual - Aimed), o la previsione
 della prima fermata successiva; 'C' se soppressa; le corse già arrivate al capolinea non entrano. Esito: PUT /api/live/tt/no-rt con
-{ts, d: {chiave: [ritardo in minuti | null, null, null, 'R' | 'C', marciapiede dell'ultima fermata con orario effettivo]}}.
+{ts, d: {chiave: [ritardo in minuti | null, null, null, 'R' | 'C', marciapiede dell'ultima fermata con orario effettivo, ultime 10 fermate già fatte [marciapiede, minuti]]}}
+(dal 25.11.2026 le fermate già fatte, con l'orario reale: lo storico per treno le usa al posto dell'ultimo ritardo visto; le corse arrivate restano finché sono nel feed).
 Gira nel repository PUBBLICO jacopobortolo/trainGB (workflow no-rt.yml, avviato dal cronometro): questa è la copia di riferimento.
 Variabili: SOCIAL_CRON_KEY, SITE. Serve: pip install requests"""
 import gzip, json, os, re, sys, time
@@ -29,6 +30,18 @@ def ts(s):
     return datetime.fromisoformat(s.replace('Z', '+00:00')).timestamp() if s else None
 
 
+def calls(rec, n=10):
+    """ultime n fermate già fatte con l'orario reale: [marciapiede, minuti di ritardo all'arrivo (alla partenza per la prima fermata)]"""
+    out = []
+    for c in rec:
+        q = tag(c, 'StopPointRef').replace('NSR:Quay:', '')
+        for a, b in (('ActualArrivalTime', 'AimedArrivalTime'), ('ActualDepartureTime', 'AimedDepartureTime')):
+            if q.isdigit() and tag(c, a) and tag(c, b):
+                out.append([int(q), round((ts(tag(c, a)) - ts(tag(c, b))) / 60)])
+                break
+    return out[-n:]
+
+
 def journey(x):
     if tag(x, 'VehicleMode') != 'rail':
         return None, None
@@ -38,8 +51,10 @@ def journey(x):
     if tag(x, 'Cancellation') == 'true':
         return k, [None, None, None, 'C']
     rec, est = blocks(x, 'RecordedCall'), blocks(x, 'EstimatedCall')
+    rc = calls(rec)
     if not est and rec and tag(rec[-1], 'ActualArrivalTime'):
-        return None, None   # arrivata al capolinea
+        # arrivata al capolinea: resta finché Entur la tiene nel feed (5-10 minuti), così il registro vede l'arrivo reale (prima usciva subito)
+        return (k, [rc[-1][1], None, None, 'R', str(rc[-1][0]), rc]) if rc else (None, None)
     last = None
     for c in rec:
         for a, b in (('ActualDepartureTime', 'AimedDepartureTime'), ('ActualArrivalTime', 'AimedArrivalTime')):
@@ -47,7 +62,7 @@ def journey(x):
                 last = (round((ts(tag(c, a)) - ts(tag(c, b))) / 60), tag(c, 'StopPointRef').replace('NSR:Quay:', ''))
                 break
     if last:
-        return k, [last[0], None, None, 'R', last[1]]
+        return k, [last[0], None, None, 'R', last[1], rc] if rc else [last[0], None, None, 'R', last[1]]
     for c in est:
         for a, b in (('ExpectedArrivalTime', 'AimedArrivalTime'), ('ExpectedDepartureTime', 'AimedDepartureTime')):
             if tag(c, a) and tag(c, b):
