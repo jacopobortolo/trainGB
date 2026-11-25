@@ -121,17 +121,23 @@ def main():
         print('(non caricato: manca SOCIAL_CRON_KEY)')
 
 
-def italo(d, nums, deps=None):
+def italo(d, nums, deps=None, feed=None, now=None):
     """Ritardi di Italo dal GTFS-Realtime di BusOne → d[«itx:<numero>»]. Ritorna (corse nel feed, abbinate).
     Dal 25.11.2026 tre controlli, dopo i +325 dell'Italo 8997 e +320 del 9961 (Milano 19:35/19:40) del 23 e 24.11, mentre i ritardi veri erano
     +10/+11 e 0/+13 (TracciaTreno, dati ViaggiaTreno): (1) la corsa del feed deve partire dal capolinea entro 5 minuti da una corsa del nostro
     orario con quel numero (start_date + start_time, ora di Roma); (2) se più corse del feed portano lo stesso numero vale quella con il trip_id
     del treno solo («NTV-8997», «NTV-8997-live-…»), non gli itinerari con cambio («NTV-8997-8966»); (3) oltre 180 minuti il ritardo di Italo si
-    scarta. Le corse scartate e i ritardi da 90 minuti in su sono stampati nel log del lavoro, per capire la causa."""
-    r = requests.get('https://proxy.busone.app/italo/gtfs-rt/trip-updates.json', timeout=60, headers=BUSONE)
-    r.raise_for_status()
-    now, n, hit, best = dt.datetime.now().timestamp(), 0, 0, {}
-    for e in r.json().get('entity', []):
+    scarta. Le corse scartate e i ritardi da 90 minuti in su sono stampati nel log del lavoro, per capire la causa.
+    Causa trovata il 25.11.2026 (log e feed): per le corse senza dati veri BusOne scrive a TUTTE le fermate la stessa ora prevista (mezzanotte
+    UTC del giorno dopo) e il «ritardo» e la differenza dall'orario (19:35 → +325; ultima fermata +177 o +96, che dopo l'01:00 passavano il
+    controllo dei 180 minuti). (4) Una corsa con almeno due fermate e una sola ora prevista per tutte e un segnaposto: resta senza dato.
+    feed e now servono solo alle prove."""
+    if feed is None:
+        r = requests.get('https://proxy.busone.app/italo/gtfs-rt/trip-updates.json', timeout=60, headers=BUSONE)
+        r.raise_for_status()
+        feed = r.json()
+    now, n, hit, best = (dt.datetime.now().timestamp() if now is None else now), 0, 0, {}
+    for e in feed.get('entity', []):
         tu = e.get('trip_update') or {}
         n += 1
         v, tr = tu.get('vehicle') or {}, tu.get('trip') or {}
@@ -155,7 +161,14 @@ def italo(d, nums, deps=None):
             d[code] = [None, None, None, 'C']; best[code] = single
             continue
         delay = None
-        for s in tu.get('stop_time_update') or []:   # prossima fermata: la prima con l'ora prevista non ancora passata; altrimenti l'ultima
+        stu = tu.get('stop_time_update') or []
+        times = {ev['time'] for s in stu for ev in (s.get('arrival') or {}, s.get('departure') or {}) if ev.get('time')}
+        if len(stu) >= 2 and len(times) == 1:   # segnaposto: stessa ora a tutte le fermate
+            print('Italo: segnaposto', code, tid, sd, st, 'ora', times.pop())
+            if code in d and not best.get(code):
+                del d[code]
+            continue
+        for s in stu:   # prossima fermata: la prima con l'ora prevista non ancora passata; altrimenti l'ultima
             ev = s.get('departure') or s.get('arrival') or {}
             if ev.get('delay') is None:
                 continue
