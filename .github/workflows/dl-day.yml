@@ -1,10 +1,13 @@
 name: dl-day
-# Once a day: the delays of every train of yesterday, from the RailPulse delay log joined with the day's timetable (dl_day.js),
-# uploaded to railpulse.ch/api/live/tt/dlday for the page railpulse.ch/stats; then the per-train history (trn_build.js) for railpulse.ch/train. Started by the RailPulse scheduler (workflow_dispatch).
+# Twice a day (started by the RailPulse scheduler, workflow_dispatch): the delays of every train of yesterday, from the RailPulse delay log joined with
+# the day's timetable (dl_day.js → railpulse.ch/api/live/tt/dlday for railpulse.ch/stats), then the per-train history (trn_build.js → railpulse.ch/train).
+# At night a provisional pass (trains still running get their last forecast); at noon the final pass (final = 1) redoes the day with the night trains arrived.
+# Copy of tools/dl-day.yml in the RailPulse repository: keep them identical.
 on:
   workflow_dispatch:
     inputs:
       day: { description: 'day AAAAMMGG (default: yesterday)', required: false, default: '' }
+      final: { description: '1 = final pass (redo the provisional day)', required: false, default: '' }
 concurrency:
   group: dl-day
   cancel-in-progress: false
@@ -16,11 +19,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - run: node dl_day.js ${{ inputs.day }} --upload
+      - run: node dl_day.js ${{ inputs.day }} --upload ${{ inputs.final == '1' && '--final' || '' }}
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
       # history of every train (delay at every stop, 180 days) for railpulse.ch/train, in D1 via /api/live/trn/...
-      - run: node trn_build.js ${{ inputs.day }} --upload
+      - run: node trn_build.js ${{ inputs.day }} --upload ${{ inputs.final == '1' && '--final' || '' }}
         if: always()
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
