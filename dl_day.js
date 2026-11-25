@@ -44,7 +44,8 @@ function keysOf(cc, r) {
   if (cc === 'uk') { k.push(code.replace(/^uk:/, '')); return k; }
   if (cc === 'no') {
     k.push(code.replace(/^no:/, ''));
-    const n = /^no:(\w+):ServiceJourney:(\d+)_/.exec(code); if (n) k.push('n:' + n[1] + '|' + n[2] + '|' + dateIn(dep0 * 1000, 'Europe/Oslo').replace(/-/g, ''));
+    // «601_…» e anche «601-LOD_…» (dal 25.11.2026: prima ~360 treni al giorno, tra cui gli F4 Bergen–Oslo, restavano senza ritardo)
+    const n = /^no:(\w+):ServiceJourney:(\d+)[-_]/.exec(code); if (n) k.push('n:' + n[1] + '|' + n[2] + '|' + dateIn(dep0 * 1000, 'Europe/Oslo').replace(/-/g, ''));
     return k;
   }
   k.push(code);
