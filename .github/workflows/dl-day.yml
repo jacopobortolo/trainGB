@@ -19,6 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
+      # Great Britain: real times at every stop from the hourly Darwin snapshots of the whole day (uk_at.py → exact-uk.json, read by the two steps below);
+      # if it fails the delay log alone is used, as before
+      - run: pip install -q requests && python uk_at.py ${{ inputs.day }} --out exact-uk.json
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          RDM_KEY_SNAP: ${{ secrets.RDM_KEY_SNAP }}
       - run: node dl_day.js ${{ inputs.day }} --upload ${{ inputs.final != '' && '--final' || '' }}
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
