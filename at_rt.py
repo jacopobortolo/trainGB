@@ -112,12 +112,15 @@ def delays(feed, rows, now):
         c = str(r[0])
         i = c.find(':stv:')
         if i >= 0:
-            by[c[i + 5:]] = r
+            by.setdefault(c[i + 5:], []).append(r)
     out = {}
     for tid, (canc, stops) in feed.items():
-        r = by.get(tid)
-        if not r:
+        # lo stesso trip_id sta nell'orario di ieri e di oggi: vale la corsa in viaggio adesso (prima vinceva sempre quella di oggi e dopo
+        # mezzanotte i treni partiti ieri sera restavano senza ritardo), altrimenti la prossima a partire
+        rs = by.get(tid)
+        if not rs:
             continue
+        r = next((x for x in rs if x[3] + x[6] <= now + 60 and x[3] + x[-2] >= now - 1800), None) or min(rs, key=lambda x: abs(x[3] + x[6] - now))
         code = r[0]
         if canc:
             out[code] = [None, None, None, 'C']
