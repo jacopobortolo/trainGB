@@ -132,10 +132,15 @@ function merge(shard, list, day, final = true, redo = false) {   // redo: rifà 
   }
   shard.days = shard.days.concat(dn).filter((x, i, a) => x > dn - KEEP && a.indexOf(x) === i).sort((a, b) => a - b);
   shard.prov = shard.prov.filter((x) => x !== dn && shard.days.includes(x)); if (!final) shard.prov.push(dn);
+  const seen = new Set();
   for (const x of list) {
+    if (seen.has(x.k)) continue; seen.add(x.k);   // due righe d'orario con la stessa chiave (partenza|ora|arrivo): una sola, o le medie per fermata contano doppio
     let t = shard.t[x.k];
     if (!t) t = shard.t[x.k] = { n: x.n, ids: x.ids, nm: [], tm: x.tm, d0: dn, f: [], a: {}, r: [] };
-    if (dn >= t.d0 + t.f.length - 1 || !t.f.length) { t.n = x.n; t.ids = x.ids; t.tm = x.tm; }   // orario più recente
+    if (dn >= t.d0 + t.f.length - 1 || !t.f.length) {   // orario più recente
+      if (t.ids.join() !== x.ids.join()) for (const q of t.r || []) if (!q[2]) q[2] = t.ids;   // le corse recenti scritte senza fermate valevano per le fermate di prima
+      t.n = x.n; t.ids = x.ids; t.tm = x.tm;
+    }
     if (dn < t.d0) { t.f = new Array(t.d0 - dn).fill(null).concat(t.f); t.d0 = dn; }
     while (t.f.length <= dn - t.d0) t.f.push(null);
     t.f[dn - t.d0] = x.f;
@@ -256,7 +261,7 @@ async function main() {
   const up = args.includes('--upload'), final = args.includes('--final') || args.includes('--redo'), redo = args.includes('--redo'); if (up && !KEY) throw new Error('manca SOCIAL_CRON_KEY');
   const only = onlyI >= 0 ? args[onlyI + 1].split(',') : Object.keys(TRN_N);
   let chPos = null;
-  const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0;
+  const index = {}, factsDay = {}, best = [], worst = [], pct = {}, dn = dayNum(day); let wrote = 0, bytes = 0, shardErr = 0;
   for (const cc of only) {
     let list = null, names = new Map(), rows = 0;
     try {
@@ -280,8 +285,8 @@ async function main() {
       factsDay[cc] = dayFacts(list, names, zoneOf);
     }
     let ntr = 0; const means = [];
-    try {
-      for (let sh = 0; sh < TRN_N[cc]; sh++) {
+    {
+      for (let sh = 0; sh < TRN_N[cc]; sh++) try {
         const name = cc + '/' + sh;
         const shard = up ? (await readShard(name)) || { v: 1, cc, days: [], t: {} } : { v: 1, cc, days: [], t: {} };
         const changed = list ? merge(shard, by.get(sh) || [], day, final, redo) : false;
@@ -301,24 +306,27 @@ async function main() {
           (index[trnBucket(num)] || (index[trnBucket(num)] = [])).push([cc, k, t.n, t.nm[0], t.nm[t.nm.length - 1], t.tm[0], num]);
         }
         if (up && changed) { bytes += await putShard(name, shard); wrote++; }
-      }
-    } catch (e) { console.log(cc, 'archivio:', e.message); }
+      } catch (e) { shardErr++; console.log(cc + '/' + sh, 'archivio:', e.message); }   // una fetta fallita non ferma le altre del paese
+    }
     if (means.length >= 50) { means.sort((a, b) => a - b); pct[cc] = Array.from({ length: 21 }, (_, i) => Math.round(10 * means[Math.min(means.length - 1, Math.floor((i / 20) * (means.length - 1)))]) / 10); }
     console.log(cc, 'treni del giorno', list ? list.length : '-', 'su', rows, '· in archivio con numero', ntr);
   }
-  if (up && only.length === Object.keys(TRN_N).length) for (let b = 0; b < 100; b++) { const bb = String(b).padStart(2, '0'); bytes += await putShard('i/' + bb, { v: 1, day, e: index[bb] || [] }); wrote++; }
+  if (shardErr) console.log('ATTENZIONE:', shardErr, 'fette non lette o non scritte: indice di ricerca non riscritto');
+  if (up && !shardErr && only.length === Object.keys(TRN_N).length) for (let b = 0; b < 100; b++) { const bb = String(b).padStart(2, '0'); bytes += await putShard('i/' + bb, { v: 1, day, e: index[bb] || [] }); wrote++; }
   console.log('fette scritte', wrote, 'byte', bytes);
   // curiosità e record: giorni grezzi (tt:factsraw, solo per questo lavoro) e riassunto per /stats (tt:facts)
   if (only.length === Object.keys(TRN_N).length) {
     let raw = { v: 1, days: {} };
-    if (up) try { const j = await (await get(SITE + '/api/live/tt/factsraw?x=' + Date.now())).json(); if (j && j.days) raw = j; } catch (e) { /* primo giorno */ }
-    raw.days[day] = factsDay; for (const d of Object.keys(raw.days)) if (dayNum(d) <= dn - 28) delete raw.days[d];
+    if (up) try { const j = await (await get(SITE + '/api/live/tt/factsraw?x=' + Date.now())).json(); if (j && j.days) raw = j; }
+      catch (e) { if (e.status !== 404) throw new Error('factsraw non leggibile (' + e.message + '): non carico'); }   // solo «non trovato» = primo giorno
+    raw.days[day] = Object.assign({}, raw.days[day] || {}, factsDay); for (const d of Object.keys(raw.days)) if (dayNum(d) <= dn - 28) delete raw.days[d];
     best.sort((a, b) => b[7] - a[7] || a[6] - b[6]); worst.sort((a, b) => b[6] - a[6] || b[5] - a[5]);
     const facts = summarizeFacts(raw, day, { best: best.slice(0, 10), worst: worst.slice(0, 10) }, pct);
     console.log('curiosità: ore per', Object.keys(facts.hours).length, 'paesi, gestori per', Object.keys(facts.ops).length, ', fermate', facts.st.length, ', treni migliori', facts.best.length, ', peggiori', facts.worst.length);
     if (up) for (const [nm, obj] of [['factsraw', raw], ['facts', facts]]) {
       const r = await fetch(SITE + '/api/live/tt/' + nm, { method: 'PUT', body: zlib.gzipSync(JSON.stringify(obj)), headers: { Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/octet-stream', 'User-Agent': 'railpulse-tools' } });
       console.log(nm, '→', r.status, (await r.text()).slice(0, 120));
+      if (!r.ok) process.exitCode = 1;
     }
   }
 }
