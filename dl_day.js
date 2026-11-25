@@ -218,6 +218,113 @@ function finalReg(cc, r, reg, pos) {
   }
   return { d, c: canc && d == null, seen };
 }
+// ritardo (minuti) a ogni fermata di una corsa del formato comune; null dove non c'è ancora nessun dato
+function perStop(cc, r, reg, pos) {
+  const dl = perStopReg(cc, r, reg, pos);
+  if (cc === 'uk' && reg.ukat) {   // Gran Bretagna: orario reale dell'istantanea Darwin, altrimenti il registro, altrimenti la previsione dell'istantanea (tools/uk_at.py)
+    const u = ukStops(r, reg); if (!u) return dl;
+    return u.map((x, j) => (x && x[1] ? x[0] : dl && dl[j] != null ? dl[j] : x ? x[0] : null));
+  }
+  if (cc !== 'no' || !reg.noq) return dl;
+  // Norvegia: dove il registro ha l'orario reale di una fermata (tools/no_rt.py) vale quello, altrove l'ultimo ritardo visto prima del passaggio
+  const m = noStops(r, reg); if (!m) return dl;
+  const out = dl || new Array(Math.floor((r.length - 4) / 3)).fill(null);
+  for (let j = 0; j < out.length; j++) { const v = m.get(r[4 + 3 * j]); if (v != null) out[j] = v; }
+  return out;
+}
+function perStopReg(cc, r, reg, pos) {
+  if (reg.exact) { const x = exactOf(r, reg.exact); if (x && x.dl) return x.dl; }   // Finlandia, Svezia: orario reale di ogni stazione dalla fonte (tools/dl_day.js)
+  const n = Math.floor((r.length - 4) / 3), dep0 = (r[3] + r[6]) * 1000;
+  for (const k of keysOf(cc, r)) {
+    const ev = reg.get(k); if (!ev) continue;
+    const dl = new Array(n).fill(null); let cur = null, e = 0, seen = false;
+    for (let j = 0; j < n; j++) {
+      const i = 4 + 3 * j, sched = (r[3] + (j === 0 ? r[i + 2] : r[i + 1])) * 1000;
+      const lim = sched + Math.max(0, cur || 0) * 60000 + 120000;   // passaggio previsto (con il ritardo noto) + 2 minuti
+      while (e < ev.length && ev[e][0] <= lim) {
+        const [t, v] = ev[e++];
+        if (t < dep0 - 3600000 || !v) continue;
+        seen = true; if (v[1] === 'C') continue;
+        const m = delayOf(cc, r, v, t, pos); if (m != null) cur = m;
+      }
+      dl[j] = cur;
+    }
+    if (seen) return dl;
+  }
+  return null;
+}
+// ---- Treni di confine (dal 25.11.2026): lo stesso treno nell'orario di due paesi. Un treno senza dato prende il ritardo dalla copia nel paese vicino. ----
+// Stesso treno = fermate in comune (stessa cella di ~5 km, stesso minuto ±1) LONTANE tra loro (celle non vicine, o almeno 4 fermate) e almeno metà di quelle
+// del treno più corto: due fermate vicine non bastano (un railjet Salisburgo–Monaco e la S8 di Monaco passano negli stessi minuti da due stazioni della stessa cella).
+const xbSid = (s) => { s = String(s); const h = s.indexOf('#'); return h < 0 ? s : s.slice(0, h); };
+const xbCell = (p) => Math.round(p[0] / 0.05) + '|' + Math.round(p[1] / 0.05);
+function far(cs) {
+  if (cs.length < 2) return false;
+  if (cs.length >= 4) return true;
+  const p = cs.map((c) => c.split('|').map(Number));
+  for (let i = 0; i < p.length; i++) for (let j = i + 1; j < p.length; j++) if (Math.abs(p[i][0] - p[j][0]) >= 2 || Math.abs(p[i][1] - p[j][1]) >= 2) return true;
+  return false;
+}
+// rows: { cc: [righe] }, pos: { cc: Map stazione → [lat, lon] } → Map riga → [{ cc, r }] (le copie negli altri paesi)
+function matchPairs(rows, pos) {
+  const all = [], cells = new Map(), out = new Map();
+  for (const cc in rows) for (const r of rows[cc] || []) {
+    if (!Array.isArray(r) || r.length < 10) continue;
+    const ev = [];
+    for (let i = 4; i + 2 < r.length; i += 3) { const p = pos[cc] && pos[cc].get(xbSid(r[i])); if (p) ev.push([xbCell(p), Math.floor((r[3] + r[i + 1]) / 60), Math.floor((r[3] + r[i + 2]) / 60)]); }
+    if (ev.length < 2) continue;
+    all.push({ cc, r, ev });
+    for (const e of ev) (cells.get(e[0]) || cells.set(e[0], new Set()).get(e[0])).add(cc);
+  }
+  const idx = new Map();   // solo le celle servite dagli orari di almeno due paesi
+  all.forEach((x, n) => { x.n = n; for (const e of x.ev) if (cells.get(e[0]).size > 1) for (const m of e[1] === e[2] ? [e[1]] : [e[1], e[2]]) { const k = e[0] + '|' + m; (idx.get(k) || idx.set(k, []).get(k)).push(n); } });
+  const put = (a, b) => { (out.get(a.r) || out.set(a.r, []).get(a.r)).push({ cc: b.cc, r: b.r }); };
+  for (const x of all) {
+    const hit = new Map();   // altro treno → celle delle fermate in comune
+    for (const e of x.ev) {
+      if (cells.get(e[0]).size < 2) continue;
+      const seen = new Set();
+      for (const m of e[1] === e[2] ? [e[1]] : [e[1], e[2]]) for (let d = -1; d <= 1; d++) for (const n of idx.get(e[0] + '|' + (m + d)) || []) if (n > x.n && all[n].cc !== x.cc && !seen.has(n)) { seen.add(n); (hit.get(n) || hit.set(n, []).get(n)).push(e[0]); }
+    }
+    for (const [n, cs] of hit) if (far(cs) && cs.length >= 0.5 * Math.min(x.ev.length, all[n].ev.length)) { put(x, all[n]); put(all[n], x); }
+  }
+  return out;
+}
+// tutto il giorno in memoria: per ogni paese orario, registro e posizioni delle stazioni; poi le coppie di confine.
+// → { S: { cc: { tt, text, rows, reg, pos, err } }, bor(cc, riga) → { d: ritardo all'ultima fermata, dl: per fermata, from: paese vicino } | null }
+const XB_NO = { ch: 1, uk: 1, ie: 1 };   // fuori dal prestito: orario in un altro formato (Svizzera) o nessun confine con una copia
+async function dayData(ccs, day, dir, noreg) {
+  const S = {};
+  for (const cc of ccs) {
+    const s = S[cc] = {};
+    try {
+      s.tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
+      s.text = noreg ? '' : dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
+      if (cc !== 'ch') { s.rows = realRows(cc, s.tt.t); s.reg = await regOf(cc, s.text, day, dir); try { s.pos = await stationsOf(cc); } catch (e) { s.pos = null; } }
+    } catch (e) { s.err = e; }
+  }
+  const rows = {}, pos = {};
+  for (const cc of ccs) if (!XB_NO[cc] && S[cc].rows && S[cc].pos) { rows[cc] = S[cc].rows; pos[cc] = S[cc].pos; }
+  const pairs = Object.keys(rows).length > 1 ? matchPairs(rows, pos) : new Map();
+  const bor = (cc, r) => {
+    const list = pairs.get(r), pa = S[cc] && S[cc].pos; if (!list || !pa) return null;
+    for (const o of list) {
+      const s2 = S[o.cc]; if (!s2 || !s2.reg || !s2.pos) continue;
+      const dlB = perStop(o.cc, o.r, s2.reg, GPS[o.cc] ? s2.pos : null); if (!dlB || dlB.every((v) => v == null)) continue;
+      const m = new Map();   // «cella|minuto» della copia → ritardo lì
+      for (let i = 4, j = 0; i + 2 < o.r.length; i += 3, j++) { const p = s2.pos.get(xbSid(o.r[i])); if (!p || dlB[j] == null) continue; const c = xbCell(p); m.set(c + '|' + Math.floor((o.r[3] + o.r[i + 1]) / 60), dlB[j]); m.set(c + '|' + Math.floor((o.r[3] + o.r[i + 2]) / 60), dlB[j]); }
+      const n = Math.floor((r.length - 4) / 3), dl = new Array(n).fill(null); let cur = null;
+      for (let i = 4, j = 0; j < n; i += 3, j++) {
+        const p = pa.get(xbSid(r[i]));
+        if (p) { const c = xbCell(p); for (const t of [r[3] + r[i + 1], r[3] + r[i + 2]]) for (let d = -1; d <= 1; d++) { const v = m.get(c + '|' + (Math.floor(t / 60) + d)); if (v != null) cur = v; } }
+        dl[j] = cur;   // dopo l'ultima fermata in comune vale l'ultimo ritardo noto (stima)
+      }
+      if (cur != null) return { d: cur, dl, from: o.cc };
+    }
+    return null;
+  };
+  return { S, bor, pairs };
+}
 function add(s, top, d, item, key) {   // top = [paese, treno, destinazione, minuti, chiave per /train]
   s[1]++; s[d < 2 ? 3 : d <= 5 ? 4 : 5]++;
   if (d <= 1) s[6]++; if (d <= 3) s[7]++; if (d <= 5) s[8]++; if (d <= 15) s[9]++;
@@ -236,17 +343,18 @@ function joinUk(rows, reg) {
   }
   return reg;
 }
-function summarize(cc, rows, reg, pos) {
-  const s = [rows.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = []; let nx = 0;
+function summarize(cc, rows, reg, pos, bor) {
+  const s = [rows.length, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], top = []; let nx = 0, nb = 0;
   if (cc === 'uk') joinUk(rows, reg);
   for (const r of rows) {
     if (!Array.isArray(r) || r.length < 10) continue;
-    const f = finalOf(cc, r, reg, pos); if (f.x === 1) nx++;
+    let f = finalOf(cc, r, reg, pos); if (f.x === 1) nx++;
+    if (f.d == null && !f.c && bor) { const b = bor(cc, r); if (b) { f = { d: b.d, c: false, seen: true, x: 3 }; nb++; } }   // treno di confine senza dato: dal paese vicino
     if (f.c) { s[2]++; continue; }
     if (f.d == null) continue;
     add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')], keyOf(cc, r));
   }
-  return { s, top, nx };
+  return { s, top, nx, nb };
 }
 // Svizzera: orario del giorno (/api/live/tt/<giorno>?c=2: trips [linea, categoria, destinazione, trip_id, fermate]) e registro degli arrivi
 //  (righe JSON ["trip_id|AAAAMMGG", ora del feed, soppressa, [[stop_sequence, ritardo di arrivo in s], …]]): ritardo = quello dell'ultima fermata nell'ultimo stato
@@ -299,21 +407,23 @@ async function main() {
   const args = process.argv.slice(2), dirI = args.indexOf('--dir'), dir = dirI >= 0 ? args[dirI + 1] : '';
   const day = args.find((a) => /^\d{8}$/.test(a)) || dateIn(Date.now() - 86400000, 'Europe/Zurich').replace(/-/g, '');
   const res = {}, top = [], onlyI = args.indexOf('--only'), noreg = args.includes('--noreg');   // --only uk --noreg: prova di un paese senza il registro (non carica)
-  for (const cc of onlyI >= 0 ? args[onlyI + 1].split(',') : CC) {
+  const ccs = onlyI >= 0 ? args[onlyI + 1].split(',') : CC, DAY = await dayData(ccs, day, dir, noreg);   // prima tutto in memoria: servono le copie dei treni di confine negli altri paesi
+  let nbor = 0;
+  for (const cc of ccs) {
     try {
-      const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
-      const text = noreg ? '' : dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
-      const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, realRows(cc, tt.t), await regOf(cc, text, day, dir), GPS[cc] ? await stationsOf(cc) : null);
+      const q = DAY.S[cc]; if (q.err) throw q.err;
+      const x = cc === 'ch' ? summarizeCh(q.tt, q.text, day) : summarize(cc, q.rows, q.reg, GPS[cc] ? q.pos : null, DAY.bor);
+      nbor += x.nb || 0;
       // meno del 15 % dei treni dell'orario con un dato = orario o feed rotti quel giorno (23.11: Spagna 6 su 3267, Irlanda e Grecia 0): il paese non entra, numeri sbagliati no
       if (!usable(x.s)) { console.log(cc, 'escluso: solo', x.s[1] + x.s[2], 'treni con un dato su', x.s[0]); continue; }
       res[cc] = x.s; top.push(...x.top);
       const pc = (n) => (x.s[1] ? Math.round((100 * n) / x.s[1]) : 0) + '%';
-      console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10], SRC[cc] ? '| orario reale dalla fonte ' + (x.nx || 0) + ', altri ' + (x.s[1] + x.s[2] - (x.nx || 0)) : '');
+      console.log(cc, 'corse', x.s[0], 'con ritardo', x.s[1], 'soppresse', x.s[2], 'in orario', pc(x.s[3]), '2-5', pc(x.s[4]), '>5', pc(x.s[5]), 'minuti', x.s[10], SRC[cc] ? '| orario reale dalla fonte ' + (x.nx || 0) + ', altri ' + (x.s[1] + x.s[2] - (x.nx || 0)) : '', x.nb ? '| dal paese vicino ' + x.nb : '');
     } catch (e) { console.log(cc, 'saltato:', e.message); }
   }
   top.sort((a, b) => b[3] - a[3]);
   const tot = Object.values(res).reduce((a, s) => [a[0] + s[0], a[1] + s[1], a[2] + s[10]], [0, 0, 0]);
-  console.log('totale: corse', tot[0], 'con ritardo', tot[1], 'minuti', tot[2]);
+  console.log('totale: corse', tot[0], 'con ritardo', tot[1], 'minuti', tot[2], '| treni di confine col ritardo dal paese vicino', nbor);
   if (!args.includes('--upload') || onlyI >= 0 || noreg) return;
   if (!KEY) throw new Error('manca SOCIAL_CRON_KEY');
   if (Object.keys(res).length < 10 || tot[1] < 5000) throw new Error('troppo pochi dati, non carico');
@@ -331,5 +441,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dayData, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
