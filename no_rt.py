@@ -48,9 +48,11 @@ def journey(x):
     k = tag(x, 'DatedVehicleJourneyRef')
     if not k:
         return None, None
-    if tag(x, 'Cancellation') == 'true':
-        return k, [None, None, None, 'C']
     rec, est = blocks(x, 'RecordedCall'), blocks(x, 'EstimatedCall')
+    # soppressa solo se lo dice la corsa (il «Cancellation» prima delle fermate) o se lo sono TUTTE le fermate: prima bastava la prima fermata soppressa
+    head = re.split(r'<(?:\w+:)?(?:RecordedCalls|EstimatedCalls)>', x)[0]
+    if tag(head, 'Cancellation') == 'true' or (rec + est and all(tag(c, 'Cancellation') == 'true' for c in rec + est)):
+        return k, [None, None, None, 'C']
     rc = calls(rec)
     if not est and rec and tag(rec[-1], 'ActualArrivalTime'):
         # arrivata al capolinea: resta finché Entur la tiene nel feed (5-10 minuti), così il registro vede l'arrivo reale (prima usciva subito)
@@ -73,11 +75,17 @@ def journey(x):
 def main():
     d, ok = {}, 0
     for i, op in enumerate(OPS):
-        try:
-            r = requests.get(SITE + '/api/no/et?d=' + op, headers=HDR, timeout=90)
-            r.raise_for_status()
-        except Exception as e:
-            print(op, 'errore', e)
+        r = None
+        for attempt in range(3):                # un gestore che non risponde si riprova: caricando senza di lui i suoi treni sparirebbero dal registro
+            try:
+                r = requests.get(SITE + '/api/no/et?d=' + op, headers=HDR, timeout=90)
+                r.raise_for_status()
+                break
+            except Exception as e:
+                print(op, 'errore', e)
+                r = None
+                time.sleep(15)
+        if r is None:
             continue
         ok += 1
         n = 0
@@ -87,8 +95,8 @@ def main():
                 d[k] = v
                 n += 1
         print(op, len(r.content) // 1000, 'kB,', n, 'treni')
-    if not ok:
-        sys.exit('nessun feed di Entur')
+    if ok < len(OPS):
+        sys.exit('manca il feed di un gestore: non carico (resta il dato di prima)')
     body = json.dumps({'ts': int(time.time() * 1000), 'd': d}, separators=(',', ':'))
     key = os.environ.get('SOCIAL_CRON_KEY', '')
     if not key:
