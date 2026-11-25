@@ -287,6 +287,8 @@ function toHour(day, now = Date.now()) {
   const h = new Date(now).toISOString().slice(0, 13).replace(/[-T]/g, '');
   return h < nx ? h : nx;
 }
+// Norvegia: fino al 25.11.2026 l'orario del giorno conteneva anche gli autobus sostitutivi («no:VYG:ServiceJourney:BUS-1923_…», 500 su 2029): non sono treni
+const realRows = (cc, t) => (cc === 'no' ? (t || []).filter((r) => !String(r[0]).includes(':BUS-')) : t || []);
 const usable = (s) => !(s[0] >= 50 && s[1] + s[2] < 0.15 * s[0]);   // [corse, con ritardo, soppresse, …]
 async function get(url, auth) {
   const r = await fetch(url, { headers: { 'User-Agent': 'railpulse-tools', ...(auth ? { Authorization: 'Bearer ' + KEY } : {}) } });
@@ -301,7 +303,7 @@ async function main() {
     try {
       const tt = dir ? JSON.parse(fs.readFileSync(path.join(dir, 'tt-' + cc + '.json'), 'utf8')) : await (await get(SITE + '/api/live/tt/' + (cc === 'ch' ? day + '?c=2' : cc + '-' + day + '?v=1'))).json();
       const text = noreg ? '' : dir ? fs.readFileSync(path.join(dir, 'reg-' + cc + '.txt'), 'utf8') : await (await get(SITE + '/api/social/dl/' + cc + '/day/' + day + '?to=' + toHour(day), true)).text();
-      const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, tt.t || [], await regOf(cc, text, day, dir), GPS[cc] ? await stationsOf(cc) : null);
+      const x = cc === 'ch' ? summarizeCh(tt, text, day) : summarize(cc, realRows(cc, tt.t), await regOf(cc, text, day, dir), GPS[cc] ? await stationsOf(cc) : null);
       // meno del 15 % dei treni dell'orario con un dato = orario o feed rotti quel giorno (23.11: Spagna 6 su 3267, Irlanda e Grecia 0): il paese non entra, numeri sbagliati no
       if (!usable(x.s)) { console.log(cc, 'escluso: solo', x.s[1] + x.s[2], 'treni con un dato su', x.s[0]); continue; }
       res[cc] = x.s; top.push(...x.top);
@@ -329,5 +331,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
