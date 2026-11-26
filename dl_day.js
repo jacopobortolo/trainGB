@@ -239,7 +239,9 @@ function finalReg(cc, r, reg, pos) {
     }
     if (d != null || canc) break;   // trovato con questo codice: gli altri non servono
   }
-  return { d, c: canc && d == null, seen };
+  // L'ULTIMO stato vale (dal 26.11.2026): un treno letto «in orario» prima della partenza e poi soppresso è soppresso (prima contava come arrivato in orario:
+  // in Polonia 9 soppressi contati contro ~70 nel feed); un ritardo arrivato DOPO la soppressione la annulla, come prima.
+  return { d: canc ? null : d, c: canc, seen };
 }
 // ritardo (minuti) a ogni fermata di una corsa del formato comune; null dove non c'è ancora nessun dato
 function perStop(cc, r, reg, pos) {
