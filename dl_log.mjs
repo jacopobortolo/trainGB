@@ -1449,6 +1449,12 @@ async function main() {
   const env = { DB: fakeDb(mem, null), LOGDB: fakeDb(mem, appended), VIA_SITE: true }, ctx = { waitUntil() {
   } };
   const st = await runAll(env, ctx, 6);
+  if (!DRY && Math.floor(Date.now() / 36e4) % 10 < 7 && st.at && !st.at[4]) {
+    await new Promise((r) => setTimeout(r, Math.max(0, 47e3 - (Date.now() - st.at[0]))));
+    await one("at", env, ctx, Date.now(), st);
+    mem.set("dl:status", { ts: Date.now(), body: JSON.stringify(st), dirty: true });
+    console.log("Austria: seconda lettura", JSON.stringify(st.at));
+  }
   const now = Date.now(), out = [];
   for (const [k, v] of appended) out.push(["L", k, v.ts || now, v.body]);
   for (const [k, v] of mem) if (v.dirty && /^dl:(p:[a-z]{2}|status|v:fi)$/.test(k)) out.push(["P", k, v.ts || now, v.body]);
