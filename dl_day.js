@@ -212,13 +212,23 @@ function finalOf(cc, r, reg, pos) {
   }
   return finalReg(cc, r, reg, pos);
 }
+// Il registro scrive solo i CAMBIAMENTI: lo stato di un treno all'inizio della finestra (un'ora prima della partenza) è l'ultimo evento precedente.
+// Fino al 26.11.2026 quegli eventi si scartavano: una soppressione annunciata più di un'ora prima (quasi tutte) e mai cambiata non si vedeva, e così un ritardo
+// rimasto uguale. Ora l'ultimo evento delle 12 ore prima della finestra vale come stato iniziale (oltre 12 ore no: sarebbe la corsa del giorno prima).
+function winEv(ev, dep0) {
+  let pre = null, i = 0;
+  while (i < ev.length && ev[i][0] < dep0 - 3600000) { pre = ev[i][0] >= dep0 - 12 * 3600000 ? ev[i] : null; i++; }
+  const rest = i ? ev.slice(i) : ev;
+  return pre && pre[1] ? [[dep0 - 3600000, pre[1]]].concat(rest) : rest;
+}
 function finalReg(cc, r, reg, pos) {
   if (reg.exact) { const x = exactOf(r, reg.exact); if (x) return { d: x.d, c: x.c, seen: true, x: 1 }; }
   if (cc === 'no' && reg.noq) { const m = noStops(r, reg), last = r[r.length - 3]; if (m && m.has(last)) return { d: m.get(last), c: false, seen: true, x: 1 }; }   // arrivo reale al capolinea
   const dep0 = (r[3] + r[6]) * 1000, arr = (r[3] + r[r.length - 2]) * 1000;
   let d = null, canc = false, seen = false;
   for (const k of keysOf(cc, r)) {
-    const ev = reg.get(k); if (!ev) continue;
+    const ev0 = reg.get(k); if (!ev0) continue;
+    const ev = winEv(ev0, dep0);
     for (const [t, v] of ev) {
       if (t < dep0 - 3600000) continue;
       if (t > arr + Math.max(0, d || 0) * 60000 + 900000) break;   // dopo l'arrivo (previsto con l'ultimo ritardo noto) non conta più
@@ -249,7 +259,8 @@ function perStopReg(cc, r, reg, pos) {
   if (reg.exact) { const x = exactOf(r, reg.exact); if (x && x.dl) return x.dl; }   // Finlandia, Svezia: orario reale di ogni stazione dalla fonte (tools/dl_day.js)
   const n = Math.floor((r.length - 4) / 3), dep0 = (r[3] + r[6]) * 1000;
   for (const k of keysOf(cc, r)) {
-    const ev = reg.get(k); if (!ev) continue;
+    const ev0 = reg.get(k); if (!ev0) continue;
+    const ev = winEv(ev0, dep0);
     const dl = new Array(n).fill(null); let cur = null, e = 0, seen = false;
     for (let j = 0; j < n; j++) {
       const i = 4 + 3 * j, sched = (r[3] + (j === 0 ? r[i + 2] : r[i + 1])) * 1000;
@@ -504,5 +515,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, plx, setPlx, plxLoad, dedupeTop, ROWOF, dayData, chRows, chLast, chStops, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, winEv, plx, setPlx, plxLoad, dedupeTop, ROWOF, dayData, chRows, chLast, chStops, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
