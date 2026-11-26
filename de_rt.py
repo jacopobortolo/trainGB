@@ -74,7 +74,7 @@ def from_gtfs_de(ids, days):
     return d, f.header.timestamp * 1000, len(f.entity)
 
 
-def from_db(rows, stations=None, sess=None, now=None, nums=None):   # stations, sess e now servono solo alle prove (tests/de_rt_test.py)
+def from_db(rows, stations=None, sess=None, now=None, nums=None, canc=None):   # stations, sess e now servono solo alle prove (tests/de_rt_test.py)
     """{trip_id: ritardo in minuti} dalle partenze e dagli arrivi delle stazioni (API OpenBoards di DB).
     nums (dizionario, facoltativo) = {trip_id: numero del treno} (journeyNumber: l'orario di gtfs.de ha solo la linea, «RE17»; serve allo storico per treno, railpulse.ch/train)."""
     cid, key = os.environ.get('DB_CLIENT_ID'), os.environ.get('DB_API_KEY')
@@ -159,6 +159,11 @@ def from_db(rows, stations=None, sess=None, now=None, nums=None):   # stations, 
                 per[tp] = per.get(tp, 0) + 1
                 if e.get('time'):
                     lastt[tp] = max(lastt.get(tp, ''), e['time'])
+                info = e.get('journeyInfo') or {}
+                if info.get('journeyCancelled') and e.get('timeSchedule'):   # TUTTA la corsa soppressa (dal 26.11.2026); una fermata soppressa da sola (corsa accorciata) non basta
+                    st = info.get('scheduledStartTime')
+                    res.append((i, kind, ts(e['timeSchedule']), 'C', int(ts(st)) // 60 if st else None, norm(names.get((info.get('destination') or {}).get('evaNumber'), '')), None))
+                    continue
                 if e.get('cancelled') or e.get('timeType') not in ('PREVIEW', 'REAL') or not e.get('timeSchedule') or not e.get('time'):
                     continue   # senza previsione (solo orario) o fermata soppressa: nessun dato
                 pt = ts(e['timeSchedule'])
@@ -183,12 +188,15 @@ def from_db(rows, stations=None, sess=None, now=None, nums=None):   # stations, 
         return cand[0][0] if len(cand) == 1 else None
 
     jobs = [(i, 'departures') for i in range(len(stations))] + [(i, 'arrivals') for i in range(min(N_ARR, len(stations)))]
-    obs, seen, hit = {}, 0, 0   # codice -> [(ora prevista, ritardo)]
+    obs, seen, hit, gone = {}, 0, 0, set()   # codice -> [(ora prevista, ritardo)]; gone = corse che DB dà per soppresse per intero
     with ThreadPoolExecutor(max_workers=8) as ex:
         for res in ex.map(read, jobs):
             for i, kind, pt, dl, start, dest, jn in res:
                 seen += 1
                 code = match(i, kind, pt, start, dest)
+                if code and dl == 'C':
+                    gone.add(code)
+                    continue
                 if code:
                     obs.setdefault(code, []).append((pt, dl))
                     if jn and nums is not None:
@@ -199,6 +207,9 @@ def from_db(rows, stations=None, sess=None, now=None, nums=None):   # stations, 
         up = [x for x in lst if x[0] + x[1] * 60 >= now - 120]   # la prossima fermata (ora prevista col ritardo), altrimenti l'ultima
         pt, delay = min(up, key=lambda x: x[0]) if up else max(lst, key=lambda x: x[0])
         out[code] = delay
+    if canc is not None:
+        canc.update(c for c in gone if c not in out)   # una previsione vera per la stessa corsa vince sulla soppressione
+    print('DB OpenBoards:', len(gone), 'corse soppresse per intero;')
     print('DB OpenBoards:', len(stations), 'stazioni,', state['calls'], 'richieste,', state['ok'], 'riuscite,', state['full'], 'tabelle piene,', seen, 'voci con previsione,', hit, 'abbinate,', len(out), 'treni,', round(time.time() - now), 's')
     return out
 
@@ -235,10 +246,12 @@ def main():
     if early:
         upload(dict(d), 'subito:')
     try:
-        nums = {}
-        for code, delay in from_db(rows, nums=nums).items():
+        nums, canc = {}, set()
+        for code, delay in from_db(rows, nums=nums, canc=canc).items():
             if code not in d or (d[code][0] is None and d[code][3] != 'C'):
                 d[code] = [delay, None, None, 'R']
+        for code in canc:   # soppressa per intero secondo DB: vale anche se gtfs.de (che non ha le soppressioni) la dà in orario
+            d[code] = [None, None, None, 'C']
         for code, jn in nums.items():   # numero del treno come quinto campo: il registro dei ritardi (log/index.js) lo conserva, tools/trn_build.js lo usa
             if code in d:
                 d[code] = list(d[code][:4]) + [jn]
