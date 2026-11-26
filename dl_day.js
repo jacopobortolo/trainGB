@@ -362,6 +362,17 @@ async function dayData(ccs, day, dir, noreg) {
   };
   return { S, bor, pairs };
 }
+// Lo stesso treno negli orari di due paesi (Leo Express 414: Polonia e Cechia) sta una volta sola tra i ritardi più grandi: resta la voce col ritardo maggiore.
+// ROWOF: voce dell'elenco → riga dell'orario (non si salva); pairs: le copie di confine di matchPairs. top deve essere già in ordine di ritardo.
+const ROWOF = new WeakMap();
+function dedupeTop(top, pairs) {
+  const taken = new Set();
+  return top.filter((t) => {
+    const r = ROWOF.get(t); if (!r) return true;
+    if ((pairs.get(r) || []).some((o) => taken.has(o.r))) return false;
+    taken.add(r); return true;
+  });
+}
 function add(s, top, d, item, key) {   // top = [paese, treno, destinazione, minuti, chiave per /train]
   s[1]++; s[d < 2 ? 3 : d <= 5 ? 4 : 5]++;
   if (d <= 1) s[6]++; if (d <= 3) s[7]++; if (d <= 5) s[8]++; if (d <= 15) s[9]++;
@@ -389,7 +400,9 @@ function summarize(cc, rows, reg, pos, bor) {
     if (f.d == null && !f.c && bor) { const b = bor(cc, r); if (b) { f = { d: b.d, c: false, seen: true, x: 3 }; nb++; } }   // treno di confine senza dato: dal paese vicino
     if (f.c) { s[2]++; continue; }
     if (f.d == null) continue;
+    const n0 = top.length;
     add(s, top, f.d, [cc, String(r[2] || '').replace(/^[^|]*\|/, ''), String(r[1] || '')], keyOf(cc, r));
+    if (top.length > n0) ROWOF.set(top[n0], r);
   }
   return { s, top, nx, nb };
 }
@@ -459,6 +472,7 @@ async function main() {
     } catch (e) { console.log(cc, 'saltato:', e.message); }
   }
   top.sort((a, b) => b[3] - a[3]);
+  const top1 = dedupeTop(top, DAY.pairs); if (top1.length < top.length) console.log('ritardi più grandi: tolti', top.length - top1.length, 'doppioni di confine'); top.length = 0; top.push(...top1);
   const tot = Object.values(res).reduce((a, s) => [a[0] + s[0], a[1] + s[1], a[2] + s[10]], [0, 0, 0]);
   console.log('totale: corse', tot[0], 'con ritardo', tot[1], 'minuti', tot[2], '| treni di confine col ritardo dal paese vicino', nbor);
   if (!args.includes('--upload') || onlyI >= 0 || noreg) return;
@@ -478,5 +492,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dayData, chRows, chLast, chStops, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dedupeTop, ROWOF, dayData, chRows, chLast, chStops, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
