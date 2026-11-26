@@ -72,6 +72,7 @@ function gpsDelay(r, lat, lon, ms, pos) {
   return m < -30 || m > 90 ? null : m < 3 ? 0 : m;
 }
 // ritardo (minuti) di un valore del registro per questa corsa; Polonia e Cechia: dall'ora prevista della prossima fermata
+const inLt = (p) => !!p && p[0] > 54.3 && p[1] > 23.2;
 function delayOf(cc, r, v, t, pos) {
   if (!v || v[1] === 'C') return null;
   if (GPS[cc]) return pos && typeof v[2] === 'number' && typeof v[3] === 'number' ? gpsDelay(r, v[2], v[3], t, pos) : null;
@@ -80,6 +81,7 @@ function delayOf(cc, r, v, t, pos) {
     if (cc === 'pl') i = 4 + 3 * v[2];
     else for (let j = 4; j + 2 < r.length; j += 3) { const s = String(r[j]), h = s.indexOf('#'); if (h >= 0 && +s.slice(h + 1) === v[2]) { i = j; break; } }
     if (i < 4 || i + 2 >= r.length) return null;
+    if (cc === 'pl' && inLt(pos && pos.get && pos.get(String(r[i])))) return null;   // fermata in Lituania: il feed polacco ne dà l'ora sfasata di un'ora esatta (falso +60), come in js/pl-data.js
     const m = Math.round((v[3] - (r[3] + (i === 4 ? r[i + 2] : r[i + 1]))) / 60);
     return m >= -60 && m <= 360 ? m : null;
   }
