@@ -126,6 +126,48 @@ function readTrips(b, nowS, first = false) {
   }
   return { ts, trips: out };
 }
+var DELAY_RE = /<Aimed(Arrival|Departure)Time>(\d{4}-\d\d-\d\dT(\d\d):(\d\d):(\d\d)[^<]*)<\/Aimed\1Time><Expected\1Time>\d{4}-\d\d-\d\dT(\d\d):(\d\d):(\d\d)/g;
+function readSiri(xml) {
+  const out = {};
+  const parts = xml.split("<EstimatedVehicleJourney>");
+  for (let i = 1; i < parts.length; i++) {
+    const j = parts[i];
+    const n = /<TrainNumberRef>([^<]*)</.exec(j), a = /<OriginAimedDepartureTime>([^<]*)</.exec(j);
+    if (!n || !a) continue;
+    const t = Math.floor(Date.parse(a[1]) / 6e4);
+    if (!(t > 0)) continue;
+    const e = j.indexOf("<EstimatedCalls>"), r = j.indexOf("<RecordedCalls>");
+    const put = (v) => {
+      out[n[1] + "@" + t] = v;
+      if (n[1].includes("-")) {
+        for (const p of n[1].split("-")) if (p && !out[p + "@" + t]) out[p + "@" + t] = v;
+      }
+    };
+    if (/<Cancellation>true</.test(j.slice(0, Math.min(e < 0 ? 1e9 : e, r < 0 ? 1e9 : r)))) {
+      put([null, "C"]);
+      continue;
+    }
+    let m = null;
+    if (e >= 0) {
+      DELAY_RE.lastIndex = e;
+      m = DELAY_RE.exec(j);
+    }
+    if (!m && r >= 0) {
+      DELAY_RE.lastIndex = r;
+      let x;
+      while ((x = DELAY_RE.exec(j)) && (e < 0 || x.index < e)) m = x;
+    }
+    let d = null;
+    if (m) {
+      d = +m[6] * 3600 + +m[7] * 60 + +m[8] - (+m[3] * 3600 + +m[4] * 60 + +m[5]);
+      if (d < -43200) d += 86400;
+      else if (d > 43200) d -= 86400;
+      d = d >= -3600 && d <= MAX_S ? Math.round(d / 60) : null;
+    }
+    put([d, "R"]);
+  }
+  return out;
+}
 async function frRt(request, url, env, ctx) {
   const cache = caches.default, key = new Request(url.origin + "/api/fr/rt?v=1");
   const hit = await cache.match(key);
@@ -966,46 +1008,52 @@ async function atRt(request, url, env, ctx) {
   if (row && now - row.ts < FRESH3 || !watched || now < (st.pause || 0) || !AT_HUBS.length) return pub(row ? row.ts : 0);
   const claim = await env.DB.prepare("INSERT INTO live (k, ts, body) VALUES ('at:sc', ?, ?) ON CONFLICT(k) DO UPDATE SET ts = excluded.ts WHERE live.ts = ?").bind(now, JSON.stringify(st), row ? row.ts : 0).run().catch(() => null);
   if (!claim || !claim.meta || !claim.meta.changes) return pub(row ? row.ts : 0);
-  const n = Math.ceil(AT_HUBS.length / GROUP2), g = (st.g | 0) % n, ids = AT_HUBS.slice(g * GROUP2, g * GROUP2 + GROUP2 * (log ? 2 : 1));
-  let ok = 0, block = false;
-  const got = {};
-  await Promise.all(ids.flatMap((h) => ["arr", "dep"].map((bt) => [h, bt])).map(async ([h, bt]) => {
-    try {
-      const r = await fetch(SB + h[0] + "&boardType=" + bt, { headers: { "User-Agent": UA9 }, signal: AbortSignal.timeout(8e3) });
-      if (r.status === 403 || r.status === 429) {
-        block = true;
-        st.err = r.status;
-        return;
+  const read = async () => {
+    const n = Math.ceil(AT_HUBS.length / GROUP2), g = (st.g | 0) % n, ids = AT_HUBS.slice(g * GROUP2, g * GROUP2 + GROUP2 * (log ? 2 : 1));
+    let ok = 0, block = false;
+    const got = {};
+    await Promise.all(ids.flatMap((h) => ["arr", "dep"].map((bt) => [h, bt])).map(async ([h, bt]) => {
+      try {
+        const r = await fetch(SB + h[0] + "&boardType=" + bt, { headers: { "User-Agent": UA9 }, signal: AbortSignal.timeout(8e3) });
+        if (r.status === 403 || r.status === 429) {
+          block = true;
+          st.err = r.status;
+          return;
+        }
+        if (!r.ok) {
+          st.err = r.status;
+          return;
+        }
+        const xml = new TextDecoder("latin1").decode(await r.arrayBuffer());
+        if (!/<Journey\s|<StationTable|<\?xml/.test(xml)) {
+          st.err = "html";
+          return;
+        }
+        const b = readScotty(xml);
+        ok++;
+        for (const k in b) if (bt === "dep" || !got[k]) got[k] = b[k];
+      } catch (e) {
+        st.err = "net";
       }
-      if (!r.ok) {
-        st.err = r.status;
-        return;
-      }
-      const xml = new TextDecoder("latin1").decode(await r.arrayBuffer());
-      if (!/<Journey\s|<StationTable|<\?xml/.test(xml)) {
-        st.err = "html";
-        return;
-      }
-      const b = readScotty(xml);
-      ok++;
-      for (const k in b) if (bt === "dep" || !got[k]) got[k] = b[k];
-    } catch (e) {
-      st.err = "net";
-    }
-  }));
-  for (const k in got) st.d[k] = [got[k][0], got[k][1], now];
-  st.g = g + (log ? 2 : 1);
-  if (block) st.pause = now + PAUSE2;
-  if (!ok && !block) {
-    st.fail = (st.fail | 0) + 1;
-    st.pause = now + Math.min(PAUSE2, 5 * 6e4 * 2 ** (st.fail - 1));
-  } else if (ok) st.fail = 0;
-  if (ok) st.err = 0;
-  for (const k in st.d) if (now - st.d[k][2] > KEEP3) delete st.d[k];
-  const save = env.DB.prepare("UPDATE live SET ts = ?, body = ? WHERE k = 'at:sc'").bind(now, JSON.stringify(st)).run().catch(() => {
-  });
-  if (ctx && ctx.waitUntil) ctx.waitUntil(save);
-  else await save;
+    }));
+    for (const k in got) st.d[k] = [got[k][0], got[k][1], now];
+    st.g = g + (log ? 2 : 1);
+    if (block) st.pause = now + PAUSE2;
+    if (!ok && !block) {
+      st.fail = (st.fail | 0) + 1;
+      st.pause = now + Math.min(PAUSE2, 5 * 6e4 * 2 ** (st.fail - 1));
+    } else if (ok) st.fail = 0;
+    if (ok) st.err = 0;
+    for (const k in st.d) if (now - st.d[k][2] > KEEP3) delete st.d[k];
+    await env.DB.prepare("UPDATE live SET ts = ?, body = ? WHERE k = 'at:sc'").bind(now, JSON.stringify(st)).run().catch(() => {
+    });
+  };
+  if (!log && ctx && ctx.waitUntil && Object.keys(st.d).length > 50) {
+    const out = pub(row ? row.ts : now);
+    ctx.waitUntil(read());
+    return out;
+  }
+  await read();
   return pub(now);
 }
 
@@ -1448,6 +1496,19 @@ async function main() {
   } } };
   const env = { DB: fakeDb(mem, null), LOGDB: fakeDb(mem, appended), VIA_SITE: true }, ctx = { waitUntil() {
   } };
+  try {
+    const old = mem.get("fr:s");
+    if (!old || Date.now() - old.ts > 4 * 6e4) {
+      const r = await fetch("https://proxy.transport.data.gouv.fr/resource/sncf-siri-lite-estimated-timetable", { headers: { "User-Agent": "RailPulse/1.0 (+https://railpulse.ch)" }, signal: AbortSignal.timeout(6e4) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const s = readSiri(await r.text()), n = Object.keys(s).length;
+      if (n < 50) throw new Error("solo " + n + " corse");
+      mem.set("fr:s", { ts: Date.now(), body: JSON.stringify(s), dirty: true });
+      console.log("SIRI francese:", n, "corse");
+    }
+  } catch (e) {
+    console.log("SIRI francese non letto:", e.message);
+  }
   const st = await runAll(env, ctx, 6);
   if (!DRY && Math.floor(Date.now() / 36e4) % 10 < 7 && st.at && !st.at[4]) {
     await new Promise((r) => setTimeout(r, Math.max(0, 47e3 - (Date.now() - st.at[0]))));
@@ -1457,7 +1518,7 @@ async function main() {
   }
   const now = Date.now(), out = [];
   for (const [k, v] of appended) out.push(["L", k, v.ts || now, v.body]);
-  for (const [k, v] of mem) if (v.dirty && /^dl:(p:[a-z]{2}|status|v:fi)$/.test(k)) out.push(["P", k, v.ts || now, v.body]);
+  for (const [k, v] of mem) if (v.dirty && /^(dl:(p:[a-z]{2}|status|v:fi)|fr:s)$/.test(k)) out.push(["P", k, v.ts || now, v.body]);
   let trains = 0, lines = 0;
   const bad = [];
   for (const cc in st) {
