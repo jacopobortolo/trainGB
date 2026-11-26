@@ -91,7 +91,8 @@ function delayOf(cc, r, v, t, pos) {
     if (cc === 'pl') i = 4 + 3 * v[2];
     else for (let j = 4; j + 2 < r.length; j += 3) { const s = String(r[j]), h = s.indexOf('#'); if (h >= 0 && +s.slice(h + 1) === v[2]) { i = j; break; } }
     if (i < 4 || i + 2 >= r.length) return null;
-    if (cc === 'pl' && (PLX.has(String(r[i])) || inLt(pos && pos.get && pos.get(String(r[i]))))) return null;   // fermata in Lituania: il feed polacco ne dà l'ora sfasata di un'ora esatta (falso +60), come in js/pl-data.js
+    // fermata estera: vale solo la PRIMA dopo il confine (previsione nata in Polonia); mai le lituane (ora sfasata di un'ora)
+    if (cc === 'pl' && (inLt(pos && pos.get && pos.get(String(r[i]))) || (PLX.has(String(r[i])) && (i === 4 || PLX.has(String(r[i - 3])))))) return null;   // fermata in Lituania: il feed polacco ne dà l'ora sfasata di un'ora esatta (falso +60), come in js/pl-data.js
     const m = Math.round((v[3] - (r[3] + (i === 4 ? r[i + 2] : r[i + 1]))) / 60);
     return m >= -60 && m <= 600 ? m : null;
   }
