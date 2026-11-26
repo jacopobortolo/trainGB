@@ -23,9 +23,13 @@ def diff(real, plan):
     return d - 1440 if d > 720 else d + 1440 if d < -720 else d
 
 
+SEEN = []      # codici delle risposte non riuscite dell'ultimo fetch (0 = risposta senza indirizzo del file)
+
+
 def fetch(now):
     """scarica l'istantanea dell'ora più recente già pronta (dopo 8 minuti dall'ora piena), altrimenti quella prima"""
     import requests
+    del SEEN[:]
     for back in (480, 4080):
         t = datetime.fromtimestamp(now - back, timezone.utc)
         for attempt in range(4):                # 429 = richieste troppo ravvicinate: si riprova dopo qualche secondo
@@ -36,14 +40,17 @@ def fetch(now):
             time.sleep(5 + 5 * attempt)
         if r.status_code != 200:
             print('richiesta', t.strftime('%H'), r.status_code)
+            SEEN.append(r.status_code)
             continue
         urls = re.findall(r'https://[^"\s\\]+', r.text)
         if not urls:
+            SEEN.append(0)
             continue
         f = requests.get(urls[0], timeout=240)
         if f.status_code == 200 and len(f.content) > 100000:
             return f.content, int(t.replace(minute=0, second=0, microsecond=0).timestamp())
         print('file', t.strftime('%H'), f.status_code)
+        SEEN.append(f.status_code if f.status_code != 200 else 0)
     return None, 0
 
 
@@ -80,6 +87,11 @@ def main():
     else:
         blob, ts = fetch(now)
     if not blob:
+        # RDM a volte non pubblica l'istantanea di un'ora (404, o file vuoto): non è un guasto nostro, il lavoro
+        # finisce senza errore e sul sito resta l'istantanea di prima. Chiave rifiutata, 429 o errori del server: errore.
+        if SEEN and all(c in (0, 404) for c in SEEN):
+            print('istantanea non pubblicata da RDM per le ultime due ore: niente da caricare')
+            return
         sys.exit('istantanea non disponibile')
     raw = gzip.decompress(blob).decode('utf-8', 'replace')
     m = re.search(r'SnapshotId>(\d{14})<', raw)
