@@ -73,6 +73,16 @@ function gpsDelay(r, lat, lon, ms, pos) {
 }
 // ritardo (minuti) di un valore del registro per questa corsa; Polonia e Cechia: dall'ora prevista della prossima fermata
 const inLt = (p) => !!p && p[0] > 54.3 && p[1] > 23.2;
+// Fermate dell'orario polacco fuori dalla Polonia (js/pl-foreign.js, generato da tools/pl_foreign.js): lì il feed polacco non ha dati veri (dal 26.11.2026).
+// Il valore resta quello dell'ultima fermata polacca (perStopReg e finalReg tengono l'ultimo ritardo valido), oppure arriva dal paese vicino.
+let PLX = new Set();
+const plx = () => PLX, setPlx = (ids) => { PLX = new Set(ids); };
+async function plxLoad() {
+  const f = path.join(__dirname, '..', 'js', 'pl-foreign.js');
+  const js = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : await (await get(SITE + '/js/pl-foreign.js')).text();
+  const m = /TB_PLX\s*=\s*"([^"]*)"/.exec(js); if (!m || m[1].length < 100) throw new Error('js/pl-foreign.js non leggibile');
+  setPlx(m[1].split(','));
+}
 function delayOf(cc, r, v, t, pos) {
   if (!v || v[1] === 'C') return null;
   if (GPS[cc]) return pos && typeof v[2] === 'number' && typeof v[3] === 'number' ? gpsDelay(r, v[2], v[3], t, pos) : null;
@@ -81,9 +91,9 @@ function delayOf(cc, r, v, t, pos) {
     if (cc === 'pl') i = 4 + 3 * v[2];
     else for (let j = 4; j + 2 < r.length; j += 3) { const s = String(r[j]), h = s.indexOf('#'); if (h >= 0 && +s.slice(h + 1) === v[2]) { i = j; break; } }
     if (i < 4 || i + 2 >= r.length) return null;
-    if (cc === 'pl' && inLt(pos && pos.get && pos.get(String(r[i])))) return null;   // fermata in Lituania: il feed polacco ne dà l'ora sfasata di un'ora esatta (falso +60), come in js/pl-data.js
+    if (cc === 'pl' && (PLX.has(String(r[i])) || inLt(pos && pos.get && pos.get(String(r[i]))))) return null;   // fermata in Lituania: il feed polacco ne dà l'ora sfasata di un'ora esatta (falso +60), come in js/pl-data.js
     const m = Math.round((v[3] - (r[3] + (i === 4 ? r[i + 2] : r[i + 1]))) / 60);
-    return m >= -60 && m <= 360 ? m : null;
+    return m >= -60 && m <= 600 ? m : null;
   }
   return typeof v[0] === 'number' && v[0] >= -60 && v[0] <= 600 ? v[0] : null;
 }
@@ -331,6 +341,7 @@ function chStops(r, last) {
 const XB_NO = { uk: 1, ie: 1 };   // fuori dal prestito: nessun confine con una copia. La Svizzera entra solo come fonte (chi la riceve è il paese vicino)
 async function dayData(ccs, day, dir, noreg) {
   const S = {};
+  if (ccs.includes('pl') && !PLX.size) try { await plxLoad(); } catch (e) { console.log('ATTENZIONE: elenco delle fermate estere polacche non letto (' + e.message + '): vale solo la regola della Lituania'); }
   for (const cc of ccs) {
     const s = S[cc] = {};
     try {
@@ -492,5 +503,5 @@ async function main() {
   console.log('caricato:', r.status, await r.text());
   if (!r.ok) throw new Error('caricamento fallito');
 }
-module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, dedupeTop, ROWOF, dayData, chRows, chLast, chStops, SRC };
+module.exports = { parseReg, keysOf, delayOf, finalOf, joinUk, summarize, summarizeCh, gpsDelay, stationsOf, usable, toHour, exactFi, exactSe, exactOf, exactDay, regOf, noStops, exactUk, ukStops, realRows, perStop, perStopReg, far, matchPairs, plx, setPlx, plxLoad, dedupeTop, ROWOF, dayData, chRows, chLast, chStops, SRC };
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
