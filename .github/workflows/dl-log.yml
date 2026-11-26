@@ -1,0 +1,21 @@
+name: dl-log
+# RailPulse delay log of Europe: reads the open delay feeds of ~26 countries and writes only the changes to railpulse.ch (D1), every ~6 minutes.
+# Started by the RailPulse scheduler (workflow_dispatch). It runs here, in a public repository, because parsing the feeds needs far more CPU time
+# than the free Cloudflare Workers plan allows (10 ms per run). dl_log.mjs is a single bundled file built in the RailPulse repository
+# (tools/dl_log_build.sh): do not edit it here. Copy of tools/dl-log.yml in the RailPulse repository: keep them identical.
+on:
+  workflow_dispatch:
+concurrency:
+  group: dl-log
+  cancel-in-progress: false
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: node dl_log.mjs
+        env:
+          SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
