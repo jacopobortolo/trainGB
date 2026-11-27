@@ -11,7 +11,7 @@ concurrency:
 jobs:
   log:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,3 +19,4 @@ jobs:
       - run: node dl_log.mjs
         env:
           SOCIAL_CRON_KEY: ${{ secrets.SOCIAL_CRON_KEY }}
+          RDM_KEY_ARR: ${{ secrets.RDM_KEY_ARR }}   # Darwin departure boards of 60 British stations; without it that part stays off
