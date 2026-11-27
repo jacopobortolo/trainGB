@@ -1319,7 +1319,7 @@ async function fiCurrent(env) {
   } catch (e) {
     v = null;
   }
-  const full = !v || !v.ver || Date.now() - v.full > 3 * 36e5;
+  const full = !v || !v.ver || Date.now() - v.full > 3 * 36e5 || row && Date.now() - row.ts > 25 * 6e4;
   const r = await fetch("https://rata.digitraffic.fi/api/v1/live-trains?version=" + (full ? 0 : v.ver), { headers: { "Digitraffic-User": "railpulse", "Accept-Encoding": "gzip" }, signal: AbortSignal.timeout(2e4) });
   if (!r.ok) throw new Error("Digitraffic " + r.status);
   const x = fiTrains(await r.json());
