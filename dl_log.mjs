@@ -1449,6 +1449,164 @@ function unpack(text) {
   return out;
 }
 
+// worker/uk-core.js
+var BASE2 = "https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepBoardWithDetails/";
+var TZ = "Europe/London";
+var offAt = 0;
+var offMs = 0;
+function londonOffset(ms) {
+  if (Math.abs(ms - offAt) < 6e5) return offMs;
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  offMs = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - Math.floor(ms / 6e4) * 6e4;
+  offAt = ms;
+  return offMs;
+}
+function londonTs(hhmm, nearMs) {
+  const s = String(hhmm || "");
+  if (s.length !== 5 || s.charCodeAt(2) !== 58) return null;
+  const h = +s.slice(0, 2), m = +s.slice(3, 5);
+  if (!(h >= 0 && h < 24 && m >= 0 && m < 60)) return null;
+  const off = londonOffset(nearMs), day = Math.floor((nearMs + off) / 864e5) * 864e5;
+  let ts = day + h * 36e5 + m * 6e4 - off;
+  if (ts - nearMs > 432e5) ts -= 864e5;
+  else if (nearMs - ts > 432e5) ts += 864e5;
+  return ts;
+}
+function expectedOf(est, planned, flagCancelled) {
+  const e = String(est || "");
+  if (flagCancelled || /^cancel/i.test(e)) return { expected: planned, late: false, cancelled: true };
+  if (/^\d\d:\d\d$/.test(e)) return { expected: londonTs(e, planned), late: false, cancelled: false };
+  if (/^delayed/i.test(e)) return { expected: planned, late: true, cancelled: false };
+  return { expected: planned, late: false, cancelled: false };
+}
+var HUB_LIST = [
+  "KGX",
+  "EUS",
+  "PAD",
+  "WAT",
+  "VIC",
+  "LST",
+  "STP",
+  "LBG",
+  "MYB",
+  "CHX",
+  "BHM",
+  "MAN",
+  "LDS",
+  "LIV",
+  "SHF",
+  "NCL",
+  "YRK",
+  "NOT",
+  "CRE",
+  "PRE",
+  "EDB",
+  "GLC",
+  "GLQ",
+  "ABD",
+  "INV",
+  "CDF",
+  "BRI",
+  "RDG",
+  "EXD",
+  "SOU",
+  "BTN",
+  "NRW",
+  "CBG",
+  // dal 10.11: altre 27, scelte sull'orario del giorno come quelle che aggiungono più treni in viaggio non ancora coperti
+  // (copertura teorica dei minuti-treno: 71 % con 33 stazioni, 91 % con 60). Se cambia il numero: aggiornare HUBS in cron/index.js.
+  "HHY",
+  "KWG",
+  "BKG",
+  "MCV",
+  "SDL",
+  "BMO",
+  "CLJ",
+  "SBP",
+  "SUN",
+  "AFK",
+  "FTN",
+  "CAR",
+  "LLJ",
+  "PBO",
+  "HUL",
+  "GLM",
+  "PAR",
+  "SHR",
+  "GTW",
+  "MBR",
+  "SRA",
+  "PTH",
+  "SLQ",
+  "CMN",
+  "OXF",
+  "IPS",
+  "SAL"
+];
+var HUB_WINDOWS = [[-100, 40], [-60, 20], [-40, 20], [-20, 30]];
+var BASE_ARR = "https://api1.raildata.org.uk/1010-live-arrival-and-departure-boards-arr-and-dep1_1/LDBWS/api/20220120/GetArrDepBoardWithDetails/";
+var ARR_WINDOWS = [[-60, 30], [-30, 30], [0, 30], [30, 30]];
+function trainsOf(d, now = Date.now()) {
+  const out = [];
+  const pts = (x) => ((x || [])[0] || {}).callingPoint || [];
+  for (const s of d && d.trainServices || []) {
+    if (s.isCancelled) {
+      const gone = (c) => !!c.isCancelled || /^cancel/i.test(c.et || c.at || "");
+      const prev = pts(s.previousCallingPoints), next = pts(s.subsequentCallingPoints), p02 = londonTs(s.std || s.sta, now);
+      if (p02 == null || !(prev.length + next.length) || !prev.concat(next).every(gone)) continue;
+      const lc = next.length ? next[next.length - 1] : null, lt = lc ? londonTs(lc.st, p02) : p02;
+      if (lt == null) continue;
+      out.push({ k: (s.operatorCode || "") + "|" + (lc ? lc.crs : d.crs) + "|" + Math.round(lt / 1e3), op: s.operatorCode || "", to: ((s.destination || [])[0] || {}).locationName || "", c: 1, s: [[d.crs, Math.round(p02 / 1e3), Math.round(p02 / 1e3)]] });
+      continue;
+    }
+    const p0 = londonTs(s.std || s.sta, now);
+    if (p0 == null) continue;
+    const e0 = expectedOf(s.std ? s.etd : s.eta, p0, false).expected;
+    const stops = [];
+    const add = (c) => {
+      if (c.isCancelled) return;
+      const pl = londonTs(c.st, p0);
+      if (pl == null) return;
+      stops.push([c.crs, Math.round(pl / 1e3), Math.round(expectedOf(c.at || c.et, pl, false).expected / 1e3)]);
+    };
+    for (const c of pts(s.previousCallingPoints)) add(c);
+    stops.push([d.crs, Math.round(p0 / 1e3), Math.round(e0 / 1e3)]);
+    for (const c of pts(s.subsequentCallingPoints)) add(c);
+    if (stops.length < 2) continue;
+    const last = stops[stops.length - 1];
+    out.push({ k: (s.operatorCode || "") + "|" + last[0] + "|" + last[1], op: s.operatorCode || "", to: ((s.destination || [])[0] || {}).locationName || "", s: stops });
+  }
+  return out;
+}
+async function hubRead(crs, keys, now = Date.now()) {
+  const arr = !!keys.RDM_KEY_ARR, base = arr ? BASE_ARR : BASE2, apikey = arr ? keys.RDM_KEY_ARR : keys.RDM_KEY;
+  const best = /* @__PURE__ */ new Map(), wins = arr ? ARR_WINDOWS : HUB_WINDOWS;
+  let okN = 0, lastStatus = 0, retried = false;
+  const one2 = async ([off, win]) => {
+    try {
+      const up = await fetch(base + crs + "?numRows=150&timeOffset=" + off + "&timeWindow=" + win, { headers: { "x-apikey": apikey, "User-Agent": "RailPulse/1.0 (railpulse.ch)" }, signal: AbortSignal.timeout(8e3) });
+      lastStatus = up.status;
+      if (!up.ok) return up.status === 429 || up.status >= 500;
+      okN++;
+      for (const t of trainsOf(await up.json(), now)) {
+        const o = best.get(t.k);
+        if (!o || t.s.length > o.s.length) best.set(t.k, t);
+      }
+      return false;
+    } catch (e) {
+      return true;
+    }
+  };
+  const first = await Promise.all(wins.map(one2));
+  const again = wins.filter((w, n) => first[n]);
+  if (again.length) {
+    retried = true;
+    await new Promise((r) => setTimeout(r, 400 + Math.random() * 400));
+    await Promise.all(again.map(one2));
+  }
+  return { list: [...best.values()], okN, n: wins.length, status: lastStatus, retried, arr };
+}
+
 // tools/dl_log.mjs
 var SITE = process.env.SITE || "https://railpulse.ch";
 var KEY = process.env.SOCIAL_CRON_KEY || "";
@@ -1485,11 +1643,34 @@ function fakeDb(mem, appended) {
     return [];
   } };
 }
+async function ukRead(keys, list = HUB_LIST, conc = 6) {
+  const out = [], todo = list.slice();
+  let part = 0, fail = 0;
+  await Promise.all(Array.from({ length: conc }, async () => {
+    for (let crs; crs = todo.shift(); ) {
+      const now = Date.now(), r = await hubRead(crs, keys, now).catch(() => null);
+      if (r && r.okN === r.n) out.push(["U", "uk:h:" + crs, now, JSON.stringify(r.list)]);
+      else if (r && r.okN) part++;
+      else fail++;
+    }
+  }));
+  return { out, part, fail };
+}
+async function ukPush(auth, mem, tag) {
+  const t0 = Date.now(), r = await ukRead({ RDM_KEY_ARR: process.env.RDM_KEY_ARR });
+  for (const [, k, ts, body2] of r.out) mem.set(k, { ts, body: body2 });
+  console.log("Gran Bretagna, lettura " + tag + ":", r.out.length, "stazioni,", r.part, "a met\xE0,", r.fail, "fallite,", Date.now() - t0, "ms");
+  if (DRY || r.out.length < 10) return t0;
+  const body = pack(r.out);
+  const w = await fetch(SITE + "/api/social/dlio", { method: "POST", body, headers: { ...auth, "Content-Type": "text/plain; charset=utf-8", "User-Agent": "railpulse-log" }, signal: AbortSignal.timeout(9e4) });
+  console.log("Gran Bretagna, caricato:", Math.round(body.length / 1024), "kB", w.status, (await w.text()).slice(0, 120));
+  return t0;
+}
 async function main() {
   const t0 = Date.now(), auth = KEY ? { Authorization: "Bearer " + KEY } : {};
-  const mem = /* @__PURE__ */ new Map(), appended = /* @__PURE__ */ new Map();
+  const mem = /* @__PURE__ */ new Map(), appended = /* @__PURE__ */ new Map(), UK = !!process.env.RDM_KEY_ARR;
   if (KEY) {
-    const r = await fetch(SITE + "/api/social/dlio", { headers: { ...auth, "User-Agent": "railpulse-log" }, signal: AbortSignal.timeout(9e4) });
+    const r = await fetch(SITE + "/api/social/dlio" + (UK ? "?uk=0" : ""), { headers: { ...auth, "User-Agent": "railpulse-log" }, signal: AbortSignal.timeout(9e4) });
     if (!r.ok) throw new Error("lettura dello stato: HTTP " + r.status);
     const text = await r.text(), recs = unpack(text);
     if (!recs.length) throw new Error("stato vuoto o non leggibile (" + text.length + " caratteri)");
@@ -1498,6 +1679,14 @@ async function main() {
   } else console.log("senza chiave: prova a secco, solo i feed pubblici");
   globalThis.caches = { default: { match: async () => void 0, put: async () => {
   } } };
+  let ukAt = 0;
+  if (UK) {
+    try {
+      ukAt = await ukPush(auth, mem, "1");
+    } catch (e) {
+      console.log("Gran Bretagna non letta:", e.message);
+    }
+  }
   const env = { DB: fakeDb(mem, null), LOGDB: fakeDb(mem, appended), VIA_SITE: true, KEY: process.env.SOCIAL_CRON_KEY || "" }, ctx = { waitUntil() {
   } };
   try {
@@ -1542,11 +1731,21 @@ async function main() {
   const wt = await w.text();
   if (!w.ok) throw new Error("scrittura: HTTP " + w.status + " " + wt.slice(0, 200));
   console.log("scritto:", Math.round(body.length / 1024), "kB", wt);
+  const h = (/* @__PURE__ */ new Date()).getUTCHours();
+  if (UK && ukAt && !DRY && h >= 4 && h < 22) {
+    await new Promise((r) => setTimeout(r, Math.max(0, 18e4 - (Date.now() - ukAt))));
+    try {
+      await ukPush(auth, mem, "2");
+    } catch (e) {
+      console.log("Gran Bretagna, seconda lettura non riuscita:", e.message);
+    }
+  }
 }
 if (process.argv[1] && /dl_log(\.bundle)?\.mjs$/.test(process.argv[1].replace(/\\/g, "/"))) main().catch((e) => {
   console.error("ERRORE", e && e.message ? e.message : e);
   process.exit(1);
 });
 export {
-  fakeDb
+  fakeDb,
+  ukRead
 };
