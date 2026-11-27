@@ -980,7 +980,7 @@ function readScotty(xml) {
   }
   return out;
 }
-async function atRt(request, url, env, ctx) {
+async function atRt(request, url, env, ctx, trusted) {
   if (!env.DB) return new Response('{"error":"not_configured"}', { status: 503, headers: HEAD3 });
   const now = Date.now();
   let base = { ts: 0, d: {} };
@@ -1003,7 +1003,10 @@ async function atRt(request, url, env, ctx) {
     return new Response(JSON.stringify({ ts: Math.max(ts || 0, base.ts || 0), d }), { headers: HEAD3 });
   };
   const ref = request.headers.get("Referer") || "";
-  const log = (request.headers.get("User-Agent") || "") === "railpulse-log";
+  const key = env.SOCIAL_CRON_KEY || "", got = (request.headers.get("Authorization") || "").replace(/^Bearer /, "");
+  let diff2 = got.length ^ key.length;
+  for (let i = 0; i < key.length; i++) diff2 |= (got.charCodeAt(i % (got.length || 1)) || 0) ^ key.charCodeAt(i);
+  const log = trusted === true || (request.headers.get("User-Agent") || "") === "railpulse-log" && !!key && !diff2;
   const watched = log || ref.includes("/at") || ref.includes("/journey") || ref.includes("/europe") && !url.searchParams.get("p");
   if (row && now - row.ts < FRESH3 || !watched || now < (st.pause || 0) || !AT_HUBS.length) return pub(row ? row.ts : 0);
   const claim = await env.DB.prepare("INSERT INTO live (k, ts, body) VALUES ('at:sc', ?, ?) ON CONFLICT(k) DO UPDATE SET ts = excluded.ts WHERE live.ts = ?").bind(now, JSON.stringify(st), row ? row.ts : 0).run().catch(() => null);
@@ -1011,7 +1014,7 @@ async function atRt(request, url, env, ctx) {
   const read = async () => {
     const n = Math.ceil(AT_HUBS.length / GROUP2), g = (st.g | 0) % n, ids = AT_HUBS.slice(g * GROUP2, g * GROUP2 + GROUP2 * (log ? 2 : 1));
     let ok = 0, block = false;
-    const got = {};
+    const got2 = {};
     await Promise.all(ids.flatMap((h) => ["arr", "dep"].map((bt) => [h, bt])).map(async ([h, bt]) => {
       try {
         const r = await fetch(SB + h[0] + "&boardType=" + bt, { headers: { "User-Agent": UA9 }, signal: AbortSignal.timeout(8e3) });
@@ -1031,12 +1034,12 @@ async function atRt(request, url, env, ctx) {
         }
         const b = readScotty(xml);
         ok++;
-        for (const k in b) if (bt === "dep" || !got[k]) got[k] = b[k];
+        for (const k in b) if (bt === "dep" || !got2[k]) got2[k] = b[k];
       } catch (e) {
         st.err = "net";
       }
     }));
-    for (const k in got) st.d[k] = [got[k][0], got[k][1], now];
+    for (const k in got2) st.d[k] = [got2[k][0], got2[k][1], now];
     st.g = g + (log ? 2 : 1);
     if (block) st.pause = now + PAUSE2;
     if (!ok && !block) {
@@ -1196,7 +1199,7 @@ var H = {
   ee: eeRt,
   be: (r, u, e, c) => beRt(new Request(r.url, { headers: { "User-Agent": "railpulse-log", Referer: ORIGIN + "/europe" } }), u, e, c),
   // Belgio: iRail si rilegge solo con un Referer del sito (worker/be.js)
-  at: (r, u, e, c) => atRt(new Request(r.url, { headers: { "User-Agent": "railpulse-log" } }), u, e, c),
+  at: (r, u, e, c) => atRt(new Request(r.url, { headers: { "User-Agent": "railpulse-log" } }), u, e, c, true),
   // Austria: Stiria (D1) + partenze di Scotty di ÖBB, due gruppi di stazioni per giro (worker/at.js)
   lu: (r, u, e, c) => luRt(new Request(r.url, { headers: { "User-Agent": "railpulse-log", Referer: ORIGIN + "/europe" } }), u, e, c)
 };
@@ -1330,6 +1333,7 @@ async function current(cc, env, ctx) {
   if (env.VIA_SITE && cc in VIA) {
     const h = { "User-Agent": "railpulse-log" };
     if (VIA[cc]) h.Referer = VIA[cc];
+    if (env.KEY) h.Authorization = "Bearer " + env.KEY;
     const r2 = await fetch(ORIGIN + "/api/" + cc + (cc === "ie" ? "/live" : "/rt") + "?p=1", { headers: h, signal: AbortSignal.timeout(4e4) });
     if (!r2.ok) throw new Error("HTTP " + r2.status);
     return (await r2.json()).d || {};
@@ -1494,7 +1498,7 @@ async function main() {
   } else console.log("senza chiave: prova a secco, solo i feed pubblici");
   globalThis.caches = { default: { match: async () => void 0, put: async () => {
   } } };
-  const env = { DB: fakeDb(mem, null), LOGDB: fakeDb(mem, appended), VIA_SITE: true }, ctx = { waitUntil() {
+  const env = { DB: fakeDb(mem, null), LOGDB: fakeDb(mem, appended), VIA_SITE: true, KEY: process.env.SOCIAL_CRON_KEY || "" }, ctx = { waitUntil() {
   } };
   try {
     const old = mem.get("fr:s");
